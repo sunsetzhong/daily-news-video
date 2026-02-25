@@ -1,8 +1,12 @@
 name: Daily News Video Generator
 
 on:
+  push:
+    branches:
+      - main
+      - master
   schedule:
-    # 每天北京时间早上0点运行 (UTC 16:00)
+    # 每天北京时间 00:00 运行 (UTC 16:00)
     - cron: '0 16 * * *'
   workflow_dispatch:
     inputs:

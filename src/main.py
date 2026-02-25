@@ -13,13 +13,20 @@ from pathlib import Path
 from news_fetcher import NewsFetcher
 from video_generator import VideoGenerator
 
+# 确保日志目录在日志处理器初始化前存在
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+LOGS_DIR = PROJECT_ROOT / 'logs'
+LOGS_DIR.mkdir(parents=True, exist_ok=True)
 # 配置日志
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler(f'logs/news_generator_{datetime.now().strftime("%Y%m%d")}.log')
+        logging.FileHandler(
+            LOGS_DIR / f'news_generator_{datetime.now().strftime("%Y%m%d")}.log',
+            encoding='utf-8'
+        )
     ]
 )
 logger = logging.getLogger(__name__)
