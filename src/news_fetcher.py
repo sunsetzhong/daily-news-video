@@ -295,6 +295,11 @@ class NewsFetcher:
         
         # 过滤和排序
         selected_news = self.filter_and_rank_news(all_news)
+
+        # 如果筛选后为空，降级到模拟数据，避免后续视频生成出现空列表
+        if not selected_news:
+            logger.warning("No valid news selected after filtering, using mock data as fallback")
+            selected_news = self.fetch_mock_news()
         
         # 生成脚本
         script = self.generate_news_script(selected_news)

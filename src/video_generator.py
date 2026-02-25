@@ -473,6 +473,7 @@ class VideoGenerator:
         """生成完整的新闻视频"""
         date_str = script['date']
         weekday_str = script['weekday']
+        news_count = len(news_items)
         
         # 生成完整音频
         audio_path = os.path.join(self.temp_dir, 'full_audio.mp3')
@@ -484,8 +485,12 @@ class VideoGenerator:
         # 计算各部分时长分配
         opening_duration = 5  # 开场5秒
         closing_duration = 5  # 结束5秒
-        news_duration = (audio_duration - opening_duration - closing_duration) / len(news_items)
-        news_duration = max(news_duration, 10)  # 每条新闻至少10秒
+        if news_count > 0:
+            news_duration = (audio_duration - opening_duration - closing_duration) / news_count
+            news_duration = max(news_duration, 10)  # 每条新闻至少10秒
+        else:
+            news_duration = 0
+            logger.warning("No news items provided, generating intro/outro only video")
         
         all_frames = []
         
@@ -501,7 +506,7 @@ class VideoGenerator:
             news_frames_count = int(news_duration * self.fps)
             for i in range(news_frames_count):
                 progress = i / news_frames_count
-                frame = self.create_news_frame(news, idx, len(news_items), progress)
+                frame = self.create_news_frame(news, idx, news_count, progress)
                 all_frames.append(frame)
         
         # 生成结束帧
