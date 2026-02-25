@@ -282,8 +282,20 @@ class VideoGenerator:
         draw.text((self.width - 150 - indicator_width, 85), 
                  indicator_text, font=indicator_font, fill='#aaaaaa')
         
+        # 兼容字典和数据类对象两种新闻结构
+        if isinstance(news_item, dict):
+            title = news_item.get('title', '')
+            content = news_item.get('content') or news_item.get('summary') or ''
+        else:
+            title = getattr(news_item, 'title', '')
+            content = getattr(news_item, 'content', '') or getattr(news_item, 'summary', '')
+
+        if not title:
+            title = "今日要闻"
+        if not content:
+            content = "暂无详细内容。"
+
         # 绘制新闻标题
-        title = news_item['title']
         title_font = self._get_font('title', 55)
         
         # 自动换行处理标题
@@ -307,7 +319,6 @@ class VideoGenerator:
             self._draw_golden_text(draw, line, 100, title_y + i * 70, title_font)
         
         # 绘制新闻内容
-        content = news_item['content']
         content_font = self._get_font('body', 35)
         
         # 自动换行处理内容
