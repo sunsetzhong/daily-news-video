@@ -7,11 +7,12 @@ import os
 import subprocess
 import json
 import asyncio
+import re
 import edge_tts
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
 import numpy as np
 from datetime import datetime
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Any, Optional
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -95,9 +96,115 @@ class VideoGenerator:
             logger.warning(f"Failed to load font {font_path}: {e}")
         
         return ImageFont.load_default()
+
+    def _normalize_news_item(self, news_item: Any) -> Dict[str, str]:
+        """兼容字典和对象两种新闻结构，统一成字典"""
+        if isinstance(news_item, dict):
+            title = news_item.get('title', '')
+            summary = news_item.get('summary') or news_item.get('content') or ''
+            source = news_item.get('source', '')
+        else:
+            title = getattr(news_item, 'title', '')
+            summary = getattr(news_item, 'summary', '') or getattr(news_item, 'content', '')
+            source = getattr(news_item, 'source', '')
+
+        return {
+            'title': title.strip() if title else '',
+            'summary': summary.strip() if summary else '',
+            'source': source.strip() if source else ''
+        }
+
+    def _split_short_subtitles(self, text: str, max_chars: int = 14) -> List[str]:
+        """将文案拆分为短字幕片段，便于与语音同步"""
+        if not text:
+            return []
+
+        cleaned = re.sub(r'\s+', '', text).strip()
+        if not cleaned:
+            return []
+
+        parts = re.split(r'([。！？；：，、,.!?;:])', cleaned)
+        sentences = []
+        for i in range(0, len(parts), 2):
+            sentence = parts[i]
+            punct = parts[i + 1] if i + 1 < len(parts) else ''
+            combined = f"{sentence}{punct}".strip()
+            if combined:
+                sentences.append(combined)
+
+        chunks = []
+        for sentence in sentences:
+            rest = sentence
+            while len(rest) > max_chars:
+                chunks.append(rest[:max_chars])
+                rest = rest[max_chars:]
+            if rest:
+                chunks.append(rest)
+
+        return chunks or [cleaned[:max_chars]]
+
+    def _wrap_text_lines(self, draw: ImageDraw.Draw, text: str, font: ImageFont.FreeTypeFont,
+                         max_width: int, max_lines: int) -> List[str]:
+        """按像素宽度换行，限制最大行数"""
+        lines = []
+        current = ""
+        for char in text:
+            test = current + char
+            bbox = draw.textbbox((0, 0), test, font=font)
+            if bbox[2] - bbox[0] > max_width and current:
+                lines.append(current)
+                current = char
+                if len(lines) >= max_lines:
+                    break
+            else:
+                current = test
+
+        if len(lines) < max_lines and current:
+            lines.append(current)
+
+        if len(lines) == max_lines and ''.join(lines) != text:
+            last = lines[-1]
+            lines[-1] = (last[:-1] + '…') if len(last) > 1 else last
+
+        return lines
+
+    def _draw_subtitle(self, draw: ImageDraw.Draw, subtitle: str):
+        """绘制底部短字幕"""
+        if not subtitle:
+            return
+
+        subtitle_font = self._get_font('body', 52)
+        text = subtitle.strip()
+        max_text_width = self.width - 240
+        lines = self._wrap_text_lines(draw, text, subtitle_font, max_text_width, max_lines=2)
+        if not lines:
+            return
+
+        line_height = 64
+        box_padding_x = 36
+        box_padding_y = 26
+        box_height = len(lines) * line_height + box_padding_y * 2
+        box_top = self.height - box_height - 36
+        box_left = 80
+        box_right = self.width - 80
+        box_bottom = self.height - 36
+
+        draw.rounded_rectangle(
+            [box_left, box_top, box_right, box_bottom],
+            radius=24,
+            fill=(12, 16, 28)
+        )
+
+        for i, line in enumerate(lines):
+            bbox = draw.textbbox((0, 0), line, font=subtitle_font)
+            line_width = bbox[2] - bbox[0]
+            x = (self.width - line_width) // 2
+            y = box_top + box_padding_y + i * line_height
+            draw.text((x, y), line, font=subtitle_font, fill=(245, 245, 245))
     
-    def create_background_frame(self, date_str: str, weekday_str: str, 
-                                progress: float = 0, is_intro: bool = True) -> np.ndarray:
+    def create_background_frame(self, date_str: str, weekday_str: str,
+                                progress: float = 0, is_intro: bool = True,
+                                subtitle: Optional[str] = None) -> np.ndarray:
         """创建背景帧"""
         # 创建深蓝色渐变背景
         img = Image.new('RGB', (self.width, self.height), color='#0a1628')
@@ -111,15 +218,15 @@ class VideoGenerator:
             b = int(40 + (y / self.height) * 30)
             draw.line([(0, y), (self.width, y)], fill=(r, g, b))
         
-        # 添加光线效果
-        self._add_light_rays(draw, progress)
-        
         # 添加网点纹理
         self._add_dot_pattern(img)
         
         # 如果是开场画面，添加标题和日期
         if is_intro:
             self._draw_title(draw, date_str, weekday_str)
+
+        # 底部短字幕
+        self._draw_subtitle(draw, subtitle or "")
         
         return np.array(img)
     
@@ -242,8 +349,9 @@ class VideoGenerator:
         draw.text((x + highlight_offset, y + highlight_offset), 
                  text, font=font, fill=(255, 240, 150))
     
-    def create_news_frame(self, news_item: Dict, index: int, 
-                          total: int, progress: float) -> np.ndarray:
+    def create_news_frame(self, news_item: Dict, index: int,
+                          total: int, progress: float,
+                          subtitle: Optional[str] = None) -> np.ndarray:
         """创建新闻内容帧"""
         # 创建背景
         img = Image.new('RGB', (self.width, self.height), color='#0a1628')
@@ -256,8 +364,7 @@ class VideoGenerator:
             b = int(40 + (y / self.height) * 30)
             draw.line([(0, y), (self.width, y)], fill=(r, g, b))
         
-        # 添加光线和纹理
-        self._add_light_rays(draw, progress)
+        # 添加纹理
         self._add_dot_pattern(img)
         
         # 绘制顶部标题栏
@@ -282,36 +389,25 @@ class VideoGenerator:
         draw.text((self.width - 150 - indicator_width, 85), 
                  indicator_text, font=indicator_font, fill='#aaaaaa')
         
-        # 兼容字典和数据类对象两种新闻结构
-        if isinstance(news_item, dict):
-            title = news_item.get('title', '')
-            content = news_item.get('content') or news_item.get('summary') or ''
-        else:
-            title = getattr(news_item, 'title', '')
-            content = getattr(news_item, 'content', '') or getattr(news_item, 'summary', '')
+        normalized = self._normalize_news_item(news_item)
+        title = normalized['title']
+        content = normalized['summary']
 
         if not title:
             title = "今日要闻"
         if not content:
             content = "暂无详细内容。"
 
+        # 字幕优先显示当前语音片段，保证字幕与语音同步
+        if subtitle:
+            content = subtitle
+
         # 绘制新闻标题
         title_font = self._get_font('title', 55)
         
         # 自动换行处理标题
         max_title_width = self.width - 200
-        words = []
-        current_line = ""
-        for char in title:
-            test_line = current_line + char
-            bbox = draw.textbbox((0, 0), test_line, font=title_font)
-            if bbox[2] - bbox[0] > max_title_width and current_line:
-                words.append(current_line)
-                current_line = char
-            else:
-                current_line = test_line
-        if current_line:
-            words.append(current_line)
+        words = self._wrap_text_lines(draw, title, title_font, max_title_width, max_lines=2)
         
         title_y = 200
         for i, line in enumerate(words[:2]):  # 最多两行
@@ -323,18 +419,7 @@ class VideoGenerator:
         
         # 自动换行处理内容
         max_content_width = self.width - 200
-        content_lines = []
-        current_line = ""
-        for char in content:
-            test_line = current_line + char
-            bbox = draw.textbbox((0, 0), test_line, font=content_font)
-            if bbox[2] - bbox[0] > max_content_width and current_line:
-                content_lines.append(current_line)
-                current_line = char
-            else:
-                current_line = test_line
-        if current_line:
-            content_lines.append(current_line)
+        content_lines = self._wrap_text_lines(draw, content, content_font, max_content_width, max_lines=3)
         
         content_y = 400
         for i, line in enumerate(content_lines[:6]):  # 最多6行
@@ -351,13 +436,18 @@ class VideoGenerator:
                       fill='#333333', outline=None)
         
         # 进度条
-        progress_width = int(bar_width * (index / total))
+        safe_total = max(total, 1)
+        progress_width = int(bar_width * (index / safe_total))
         draw.rectangle([100, bar_y, 100 + progress_width, bar_y + bar_height],
                       fill='#ff3333', outline=None)
+
+        # 底部短字幕
+        self._draw_subtitle(draw, subtitle or "")
         
         return np.array(img)
     
-    def create_ending_frame(self, progress: float) -> np.ndarray:
+    def create_ending_frame(self, progress: float,
+                            subtitle: Optional[str] = None) -> np.ndarray:
         """创建结束帧"""
         img = Image.new('RGB', (self.width, self.height), color='#0a1628')
         draw = ImageDraw.Draw(img)
@@ -369,7 +459,6 @@ class VideoGenerator:
             b = int(40 + (y / self.height) * 30)
             draw.line([(0, y), (self.width, y)], fill=(r, g, b))
         
-        self._add_light_rays(draw, progress)
         self._add_dot_pattern(img)
         
         # 结束语
@@ -393,9 +482,23 @@ class VideoGenerator:
         sub_y = text_y + 150
         
         draw.text((sub_x, sub_y), sub, font=sub_font, fill='#cccccc')
+
+        # 底部短字幕
+        self._draw_subtitle(draw, subtitle or "")
         
         return np.array(img)
     
+    def _get_audio_duration(self, audio_path: str) -> float:
+        """获取音频时长（秒）"""
+        probe = subprocess.run(
+            ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
+             '-of', 'default=noprint_wrappers=1:nokey=1', audio_path],
+            capture_output=True, text=True
+        )
+        if probe.returncode != 0 or not probe.stdout.strip():
+            raise RuntimeError(f"Failed to probe duration for {audio_path}: {probe.stderr}")
+        return float(probe.stdout.strip())
+
     async def generate_audio(self, text: str, output_path: str) -> float:
         """使用edge-tts生成音频"""
         try:
@@ -406,21 +509,38 @@ class VideoGenerator:
                 volume=self.tts_volume
             )
             await communicate.save(output_path)
-            
-            # 获取音频时长
-            probe = subprocess.run(
-                ['ffprobe', '-v', 'error', '-show_entries', 'format=duration',
-                 '-of', 'default=noprint_wrappers=1:nokey=1', output_path],
-                capture_output=True, text=True
-            )
-            duration = float(probe.stdout.strip())
-            
+            duration = self._get_audio_duration(output_path)
             logger.info(f"Generated audio: {output_path}, duration: {duration:.2f}s")
             return duration
-            
         except Exception as e:
             logger.error(f"Error generating audio: {e}")
             raise
+
+    def concat_audio_segments(self, audio_paths: List[str], output_path: str):
+        """合并音频片段"""
+        list_path = os.path.join(self.temp_dir, 'audio_segments.txt')
+        with open(list_path, 'w', encoding='utf-8') as f:
+            for path in audio_paths:
+                escaped = path.replace("'", "'\\''")
+                f.write(f"file '{escaped}'\n")
+
+        cmd = [
+            'ffmpeg', '-y',
+            '-f', 'concat',
+            '-safe', '0',
+            '-i', list_path,
+            '-c:a', 'libmp3lame',
+            '-b:a', '192k',
+            output_path
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+
+        if os.path.exists(list_path):
+            os.remove(list_path)
+
+        if result.returncode != 0:
+            logger.error(f"Audio concat error: {result.stderr}")
+            raise RuntimeError(f"Failed to concat audio: {result.stderr}")
     
     def frames_to_video(self, frames: List[np.ndarray], output_path: str, 
                         duration: float, audio_path: str = None):
@@ -482,60 +602,98 @@ class VideoGenerator:
     
     async def generate_video(self, script: Dict, news_items: List) -> str:
         """生成完整的新闻视频"""
-        date_str = script['date']
-        weekday_str = script['weekday']
-        news_count = len(news_items)
-        
-        # 生成完整音频
-        audio_path = os.path.join(self.temp_dir, 'full_audio.mp3')
-        full_script = script['full_script']
-        audio_duration = await self.generate_audio(full_script, audio_path)
-        
-        logger.info(f"Total audio duration: {audio_duration:.2f}s")
-        
-        # 计算各部分时长分配
-        opening_duration = 5  # 开场5秒
-        closing_duration = 5  # 结束5秒
-        if news_count > 0:
-            news_duration = (audio_duration - opening_duration - closing_duration) / news_count
-            news_duration = max(news_duration, 10)  # 每条新闻至少10秒
-        else:
-            news_duration = 0
+        date_str = script.get('date', datetime.now().strftime("%m月%d日"))
+        weekday_str = script.get('weekday', '')
+        normalized_news = [self._normalize_news_item(item) for item in news_items]
+        news_count = len(normalized_news)
+
+        # 构建“短字幕 + 短语音”片段，保证字幕与语音同步
+        segments = []
+
+        opening_text = script.get('opening', '欢迎收听听闻天下。')
+        for chunk in self._split_short_subtitles(opening_text, max_chars=14):
+            segments.append({
+                'scene': 'intro',
+                'tts_text': chunk,
+                'subtitle': chunk
+            })
+
+        if news_count == 0:
             logger.warning("No news items provided, generating intro/outro only video")
-        
+
+        for idx, news in enumerate(normalized_news, 1):
+            source_text = news['source'] if news['source'] else '今日要闻'
+            composed = f"第{idx}条新闻。{news['title']}。{news['summary']}。来源：{source_text}。"
+            for chunk in self._split_short_subtitles(composed, max_chars=14):
+                segments.append({
+                    'scene': 'news',
+                    'tts_text': chunk,
+                    'subtitle': chunk,
+                    'news': news,
+                    'index': idx,
+                    'total': news_count
+                })
+
+        closing_text = script.get('closing', '以上就是今天的新闻播报，感谢收听，我们明天再见。')
+        for chunk in self._split_short_subtitles(closing_text, max_chars=14):
+            segments.append({
+                'scene': 'outro',
+                'tts_text': chunk,
+                'subtitle': chunk
+            })
+
+        if not segments:
+            raise RuntimeError("No segments generated for audio/video rendering")
+
+        # 逐段生成音频
+        segment_audio_paths = []
+        for i, segment in enumerate(segments):
+            segment_audio_path = os.path.join(self.temp_dir, f'segment_{i:03d}.mp3')
+            segment_duration = await self.generate_audio(segment['tts_text'], segment_audio_path)
+            segment['duration'] = max(segment_duration, 0.2)
+            segment['audio_path'] = segment_audio_path
+            segment_audio_paths.append(segment_audio_path)
+
+        # 合并音频片段
+        audio_path = os.path.join(self.temp_dir, 'full_audio.mp3')
+        self.concat_audio_segments(segment_audio_paths, audio_path)
+        audio_duration = self._get_audio_duration(audio_path)
+        logger.info(f"Total audio duration: {audio_duration:.2f}s")
+
+        # 根据每段音频时长逐段渲染画面
         all_frames = []
-        
-        # 生成开场帧
-        intro_frames_count = int(opening_duration * self.fps)
-        for i in range(intro_frames_count):
-            progress = i / intro_frames_count
-            frame = self.create_background_frame(date_str, weekday_str, progress, True)
-            all_frames.append(frame)
-        
-        # 生成新闻帧
-        for idx, news in enumerate(news_items, 1):
-            news_frames_count = int(news_duration * self.fps)
-            for i in range(news_frames_count):
-                progress = i / news_frames_count
-                frame = self.create_news_frame(news, idx, news_count, progress)
+        for segment in segments:
+            frames_count = max(1, int(segment['duration'] * self.fps))
+            for i in range(frames_count):
+                progress = i / frames_count
+                if segment['scene'] == 'intro':
+                    frame = self.create_background_frame(
+                        date_str, weekday_str, progress, True, subtitle=segment['subtitle']
+                    )
+                elif segment['scene'] == 'news':
+                    frame = self.create_news_frame(
+                        segment['news'],
+                        segment['index'],
+                        segment['total'],
+                        progress,
+                        subtitle=segment['subtitle']
+                    )
+                else:
+                    frame = self.create_ending_frame(progress, subtitle=segment['subtitle'])
                 all_frames.append(frame)
-        
-        # 生成结束帧
-        ending_frames_count = int(closing_duration * self.fps)
-        for i in range(ending_frames_count):
-            progress = i / ending_frames_count
-            frame = self.create_ending_frame(progress)
-            all_frames.append(frame)
-        
+
         # 生成视频
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         output_path = os.path.join(self.output_dir, f'daily_news_{timestamp}.mp4')
-        
         self.frames_to_video(all_frames, output_path, audio_duration, audio_path)
-        
+
         # 清理临时文件
-        os.remove(audio_path)
-        
+        for segment_audio_path in segment_audio_paths:
+            if os.path.exists(segment_audio_path):
+                os.remove(segment_audio_path)
+        if os.path.exists(audio_path):
+            os.remove(audio_path)
+
         logger.info(f"Video generation complete: {output_path}")
         return output_path
 
