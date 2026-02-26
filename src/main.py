@@ -7,11 +7,19 @@ import sys
 import json
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from news_fetcher import NewsFetcher
 from video_generator import VideoGenerator
+
+BEIJING_TZ = timezone(timedelta(hours=8))
+
+
+def bj_now() -> datetime:
+    """北京时间当前时间"""
+    return datetime.now(BEIJING_TZ)
+
 
 # 确保日志目录在日志处理器初始化前存在
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -24,7 +32,7 @@ logging.basicConfig(
     handlers=[
         logging.StreamHandler(sys.stdout),
         logging.FileHandler(
-            LOGS_DIR / f'news_generator_{datetime.now().strftime("%Y%m%d")}.log',
+            LOGS_DIR / f'news_generator_{bj_now().strftime("%Y%m%d")}.log',
             encoding='utf-8'
         )
     ]
@@ -42,7 +50,7 @@ def setup_directories():
 
 def save_script(script: dict, output_dir: str = 'output'):
     """保存脚本到JSON文件"""
-    script_path = os.path.join(output_dir, f'script_{datetime.now().strftime("%Y%m%d")}.json')
+    script_path = os.path.join(output_dir, f'script_{bj_now().strftime("%Y%m%d")}.json')
     with open(script_path, 'w', encoding='utf-8') as f:
         json.dump(script, f, ensure_ascii=False, indent=2)
     logger.info(f"Script saved to: {script_path}")
@@ -57,7 +65,7 @@ def generate_metadata(video_path: str, script: dict, news_count: int) -> dict:
         'date': script['date'],
         'weekday': script['weekday'],
         'video_file': os.path.basename(video_path),
-        'generated_at': datetime.now().isoformat(),
+        'generated_at': bj_now().isoformat(),
         'news_count': news_count,
         'opening': script['opening'],
         'closing': script['closing'],
@@ -105,7 +113,7 @@ async def main():
         # 3. 生成元数据
         metadata = generate_metadata(video_path, script, len(news_items))
         metadata_path = os.path.join('output', 
-            f'metadata_{datetime.now().strftime("%Y%m%d")}.json')
+            f'metadata_{bj_now().strftime("%Y%m%d")}.json')
         with open(metadata_path, 'w', encoding='utf-8') as f:
             json.dump(metadata, f, ensure_ascii=False, indent=2)
         

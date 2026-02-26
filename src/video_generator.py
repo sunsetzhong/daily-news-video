@@ -11,7 +11,7 @@ import re
 import edge_tts
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
 import numpy as np
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Tuple, Any, Optional
 import logging
 
@@ -45,6 +45,10 @@ class VideoGenerator:
         self.tts_voice = os.getenv('TTS_VOICE', 'zh-CN-XiaoxiaoNeural')
         self.tts_rate = "+0%"
         self.tts_volume = "+0%"
+
+    def _beijing_now(self) -> datetime:
+        """北京时间"""
+        return datetime.now(timezone(timedelta(hours=8)))
     
     def _find_fonts(self) -> Dict[str, str]:
         """查找系统中可用的中文字体"""
@@ -351,7 +355,8 @@ class VideoGenerator:
     
     def create_news_frame(self, news_item: Dict, index: int,
                           total: int, progress: float,
-                          subtitle: Optional[str] = None) -> np.ndarray:
+                          subtitle: Optional[str] = None,
+                          display_date: Optional[str] = None) -> np.ndarray:
         """创建新闻内容帧"""
         # 创建背景
         img = Image.new('RGB', (self.width, self.height), color='#0a1628')
@@ -377,7 +382,7 @@ class VideoGenerator:
         draw.text((50, 30), "听闻天下", font=program_font, fill='white')
         
         # 日期
-        date_str = datetime.now().strftime("%m月%d日")
+        date_str = display_date or self._beijing_now().strftime("%m月%d日")
         date_font = self._get_font('body', 30)
         draw.text((self.width - 200, 45), date_str, font=date_font, fill='#ff3333')
         
@@ -499,22 +504,62 @@ class VideoGenerator:
             raise RuntimeError(f"Failed to probe duration for {audio_path}: {probe.stderr}")
         return float(probe.stdout.strip())
 
+    def _generate_silent_audio(self, output_path: str, duration: float) -> float:
+        """生成静音音频作为最终兜底，避免流程中断"""
+        safe_duration = max(0.6, min(duration, 3.0))
+        cmd = [
+            'ffmpeg', '-y',
+            '-f', 'lavfi',
+            '-i', 'anullsrc=r=24000:cl=mono',
+            '-t', f'{safe_duration:.2f}',
+            '-q:a', '9',
+            '-acodec', 'libmp3lame',
+            output_path
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            raise RuntimeError(f"Failed to generate silent audio: {result.stderr}")
+        return self._get_audio_duration(output_path)
+
     async def generate_audio(self, text: str, output_path: str) -> float:
         """使用edge-tts生成音频"""
-        try:
-            communicate = edge_tts.Communicate(
-                text=text,
-                voice=self.tts_voice,
-                rate=self.tts_rate,
-                volume=self.tts_volume
-            )
-            await communicate.save(output_path)
-            duration = self._get_audio_duration(output_path)
-            logger.info(f"Generated audio: {output_path}, duration: {duration:.2f}s")
-            return duration
-        except Exception as e:
-            logger.error(f"Error generating audio: {e}")
-            raise
+        cleaned_text = re.sub(r'\s+', ' ', text or '').strip()
+        if not cleaned_text:
+            return self._generate_silent_audio(output_path, 0.8)
+
+        voices = []
+        for voice in [self.tts_voice, 'zh-CN-XiaoxiaoNeural', 'zh-CN-YunxiNeural']:
+            if voice and voice not in voices:
+                voices.append(voice)
+
+        last_error = None
+        for voice in voices:
+            for attempt in range(3):
+                try:
+                    communicate = edge_tts.Communicate(
+                        text=cleaned_text,
+                        voice=voice,
+                        rate=self.tts_rate,
+                        volume=self.tts_volume
+                    )
+                    await communicate.save(output_path)
+                    duration = self._get_audio_duration(output_path)
+                    logger.info(
+                        f"Generated audio: {output_path}, duration: {duration:.2f}s, voice: {voice}"
+                    )
+                    return duration
+                except Exception as e:
+                    last_error = e
+                    wait_seconds = 1.0 + attempt * 1.5
+                    logger.warning(
+                        f"TTS failed for voice={voice}, attempt={attempt + 1}/3, error={e}"
+                    )
+                    await asyncio.sleep(wait_seconds)
+
+        logger.error(f"Error generating audio after retries: {last_error}")
+        # 兜底静音，避免整个工作流失败
+        fallback_duration = max(0.8, min(len(cleaned_text) * 0.18, 3.0))
+        return self._generate_silent_audio(output_path, fallback_duration)
 
     def concat_audio_segments(self, audio_paths: List[str], output_path: str):
         """合并音频片段"""
@@ -602,95 +647,131 @@ class VideoGenerator:
     
     async def generate_video(self, script: Dict, news_items: List) -> str:
         """生成完整的新闻视频"""
-        date_str = script.get('date', datetime.now().strftime("%m月%d日"))
+        date_str = script.get('date', self._beijing_now().strftime("%m月%d日"))
         weekday_str = script.get('weekday', '')
         normalized_news = [self._normalize_news_item(item) for item in news_items]
         news_count = len(normalized_news)
 
-        # 构建“短字幕 + 短语音”片段，保证字幕与语音同步
-        segments = []
+        # 构建“段落语音 + 短字幕切片”
+        blocks = []
 
         opening_text = script.get('opening', '欢迎收听听闻天下。')
-        for chunk in self._split_short_subtitles(opening_text, max_chars=14):
-            segments.append({
-                'scene': 'intro',
-                'tts_text': chunk,
-                'subtitle': chunk
-            })
+        opening_subtitles = self._split_short_subtitles(opening_text, max_chars=14)
+        blocks.append({
+            'scene': 'intro',
+            'tts_text': opening_text,
+            'subtitles': opening_subtitles or ['欢迎收听听闻天下。']
+        })
 
         if news_count == 0:
             logger.warning("No news items provided, generating intro/outro only video")
 
         for idx, news in enumerate(normalized_news, 1):
-            source_text = news['source'] if news['source'] else '今日要闻'
-            composed = f"第{idx}条新闻。{news['title']}。{news['summary']}。来源：{source_text}。"
-            for chunk in self._split_short_subtitles(composed, max_chars=14):
-                segments.append({
-                    'scene': 'news',
-                    'tts_text': chunk,
-                    'subtitle': chunk,
-                    'news': news,
-                    'index': idx,
-                    'total': news_count
-                })
+            title = news['title'] or '今日要闻'
+            summary = (news['summary'] or '')[:90]
+            source_text = news['source'] if news['source'] else '综合来源'
 
-        closing_text = script.get('closing', '以上就是今天的新闻播报，感谢收听，我们明天再见。')
-        for chunk in self._split_short_subtitles(closing_text, max_chars=14):
-            segments.append({
-                'scene': 'outro',
-                'tts_text': chunk,
-                'subtitle': chunk
+            tts_text = f"第{idx}条新闻。{title}。{summary}。来源：{source_text}。"
+            subtitle_text = f"{title}。{summary}。"
+            subtitles = self._split_short_subtitles(subtitle_text, max_chars=14)
+
+            blocks.append({
+                'scene': 'news',
+                'tts_text': tts_text,
+                'subtitles': subtitles or [title],
+                'news': news,
+                'index': idx,
+                'total': news_count
             })
 
-        if not segments:
-            raise RuntimeError("No segments generated for audio/video rendering")
+        closing_text = script.get('closing', '以上就是今天的新闻播报，感谢收听，我们明天再见。')
+        closing_subtitles = self._split_short_subtitles(closing_text, max_chars=14)
+        blocks.append({
+            'scene': 'outro',
+            'tts_text': closing_text,
+            'subtitles': closing_subtitles or ['感谢收听，我们明天再见。']
+        })
 
-        # 逐段生成音频
-        segment_audio_paths = []
-        for i, segment in enumerate(segments):
-            segment_audio_path = os.path.join(self.temp_dir, f'segment_{i:03d}.mp3')
-            segment_duration = await self.generate_audio(segment['tts_text'], segment_audio_path)
-            segment['duration'] = max(segment_duration, 0.2)
-            segment['audio_path'] = segment_audio_path
-            segment_audio_paths.append(segment_audio_path)
+        if not blocks:
+            raise RuntimeError("No blocks generated for audio/video rendering")
+
+        # 按段落生成音频（调用次数少，稳定性更高）
+        block_audio_paths = []
+        for i, block in enumerate(blocks):
+            block_audio_path = os.path.join(self.temp_dir, f'block_{i:03d}.mp3')
+            block_duration = await self.generate_audio(block['tts_text'], block_audio_path)
+            block['duration'] = max(block_duration, 0.6)
+            block_audio_paths.append(block_audio_path)
 
         # 合并音频片段
         audio_path = os.path.join(self.temp_dir, 'full_audio.mp3')
-        self.concat_audio_segments(segment_audio_paths, audio_path)
+        self.concat_audio_segments(block_audio_paths, audio_path)
         audio_duration = self._get_audio_duration(audio_path)
         logger.info(f"Total audio duration: {audio_duration:.2f}s")
 
-        # 根据每段音频时长逐段渲染画面
+        # 根据每段音频时长和字幕切片渲染画面
         all_frames = []
-        for segment in segments:
-            frames_count = max(1, int(segment['duration'] * self.fps))
-            for i in range(frames_count):
-                progress = i / frames_count
-                if segment['scene'] == 'intro':
-                    frame = self.create_background_frame(
-                        date_str, weekday_str, progress, True, subtitle=segment['subtitle']
-                    )
-                elif segment['scene'] == 'news':
-                    frame = self.create_news_frame(
-                        segment['news'],
-                        segment['index'],
-                        segment['total'],
-                        progress,
-                        subtitle=segment['subtitle']
-                    )
-                else:
-                    frame = self.create_ending_frame(progress, subtitle=segment['subtitle'])
-                all_frames.append(frame)
+        for block in blocks:
+            subtitles = block['subtitles'] or ['']
+            total_block_frames = max(1, int(block['duration'] * self.fps))
+            weights = [max(len(s), 1) for s in subtitles]
+            total_weight = sum(weights)
+
+            subtitle_frame_counts = [
+                max(1, int(total_block_frames * (weight / total_weight)))
+                for weight in weights
+            ]
+            diff = total_block_frames - sum(subtitle_frame_counts)
+            if diff > 0:
+                subtitle_frame_counts[-1] += diff
+            elif diff < 0:
+                for idx in sorted(
+                    range(len(subtitle_frame_counts)),
+                    key=lambda i: subtitle_frame_counts[i],
+                    reverse=True
+                ):
+                    if diff == 0:
+                        break
+                    reducible = subtitle_frame_counts[idx] - 1
+                    if reducible <= 0:
+                        continue
+                    step = min(reducible, -diff)
+                    subtitle_frame_counts[idx] -= step
+                    diff += step
+
+            for subtitle, subtitle_frames in zip(subtitles, subtitle_frame_counts):
+                for i in range(subtitle_frames):
+                    progress = i / subtitle_frames
+                    if block['scene'] == 'intro':
+                        frame = self.create_background_frame(
+                            date_str,
+                            weekday_str,
+                            progress,
+                            True,
+                            subtitle=subtitle
+                        )
+                    elif block['scene'] == 'news':
+                        frame = self.create_news_frame(
+                            block['news'],
+                            block['index'],
+                            block['total'],
+                            progress,
+                            subtitle=subtitle,
+                            display_date=date_str
+                        )
+                    else:
+                        frame = self.create_ending_frame(progress, subtitle=subtitle)
+                    all_frames.append(frame)
 
         # 生成视频
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        timestamp = self._beijing_now().strftime("%Y%m%d_%H%M%S")
         output_path = os.path.join(self.output_dir, f'daily_news_{timestamp}.mp4')
         self.frames_to_video(all_frames, output_path, audio_duration, audio_path)
 
         # 清理临时文件
-        for segment_audio_path in segment_audio_paths:
-            if os.path.exists(segment_audio_path):
-                os.remove(segment_audio_path)
+        for block_audio_path in block_audio_paths:
+            if os.path.exists(block_audio_path):
+                os.remove(block_audio_path)
         if os.path.exists(audio_path):
             os.remove(audio_path)
 
