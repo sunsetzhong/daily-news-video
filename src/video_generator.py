@@ -493,9 +493,7 @@ class VideoGenerator:
         draw = ImageDraw.Draw(img)
 
         self._draw_brand_badge(img, draw)
-
-        if is_intro:
-            self._draw_main_title_block(draw, date_str, weekday_str)
+        self._draw_main_title_block(draw, date_str, weekday_str)
 
         self._draw_subtitle(draw, subtitle or "")
         
@@ -623,121 +621,32 @@ class VideoGenerator:
     def create_news_frame(self, news_item: Dict, index: int,
                           total: int, progress: float,
                           subtitle: Optional[str] = None,
-                          display_date: Optional[str] = None) -> np.ndarray:
-        """创建新闻内容帧"""
+                          display_date: Optional[str] = None,
+                          display_weekday: Optional[str] = None) -> np.ndarray:
+        """创建新闻内容帧（仅保留主视觉与字幕）"""
         img = Image.fromarray(self.base_background.copy())
         draw = ImageDraw.Draw(img)
 
         self._draw_brand_badge(img, draw)
-
-        # 顶部节目名
-        program_font = self._get_font('title', 96)
-        header_text = "听闻天下"
-        hb = draw.textbbox((0, 0), header_text, font=program_font)
-        hx = (self.width - (hb[2] - hb[0])) // 2
-        draw.text(
-            (hx, 64),
-            header_text,
-            font=program_font,
-            fill=(246, 251, 255),
-            stroke_width=4,
-            stroke_fill=(48, 145, 225)
-        )
-
-        # 日期与条数
         date_str = display_date or self._beijing_now().strftime("%m月%d日")
-        date_font = self._get_font('subtitle', 52)
-        indicator_font = self._get_font('subtitle', 48)
-        draw.text(
-            (self.width - 360, 74),
-            date_str,
-            font=date_font,
-            fill=(246, 30, 30),
-            stroke_width=4,
-            stroke_fill=(246, 246, 250)
-        )
-        draw.text(
-            (self.width - 360, 128),
-            f"{index}/{max(total, 1)}",
-            font=indicator_font,
-            fill=(230, 240, 252)
-        )
-
-        normalized = self._normalize_news_item(news_item)
-        title = normalized['title'] or "今日要闻"
-        content = normalized['summary'] or "暂无详细内容。"
-        source = normalized['source'] or "综合来源"
-
-        # 中央新闻标题（白字蓝描边）
-        title_font = self._get_font('title', 82)
-        title_lines = self._wrap_text_lines(draw, title, title_font, self.width - 260, max_lines=2)
-        title_y = 300
-        for i, line in enumerate(title_lines):
-            bbox = draw.textbbox((0, 0), line, font=title_font)
-            tx = (self.width - (bbox[2] - bbox[0])) // 2
-            ty = title_y + i * 92
-            draw.text(
-                (tx, ty),
-                line,
-                font=title_font,
-                fill=(248, 252, 255),
-                stroke_width=5,
-                stroke_fill=(35, 120, 205)
-            )
-
-        # 来源信息
-        source_font = self._get_font('body', 42)
-        source_text = f"来源：{source}"
-        sb = draw.textbbox((0, 0), source_text, font=source_font)
-        sx = (self.width - (sb[2] - sb[0])) // 2
-        draw.rounded_rectangle(
-            [sx - 24, 520, sx + (sb[2] - sb[0]) + 24, 590],
-            radius=20,
-            fill=(5, 40, 120),
-            outline=(170, 220, 255),
-            width=2
-        )
-        draw.text((sx, 534), source_text, font=source_font, fill=(235, 244, 255))
-
-        # 底部短字幕
-        self._draw_subtitle(draw, subtitle or content)
+        weekday_str = display_weekday or self._beijing_now().strftime("星期%w").replace("0", "日").replace("1", "一").replace("2", "二").replace("3", "三").replace("4", "四").replace("5", "五").replace("6", "六")
+        self._draw_main_title_block(draw, date_str, weekday_str)
+        self._draw_subtitle(draw, subtitle or "")
         
         return np.array(img)
     
     def create_ending_frame(self, progress: float,
-                            subtitle: Optional[str] = None) -> np.ndarray:
-        """创建结束帧"""
+                            subtitle: Optional[str] = None,
+                            display_date: Optional[str] = None,
+                            display_weekday: Optional[str] = None) -> np.ndarray:
+        """创建结束帧（保持中间日期主视觉）"""
         img = Image.fromarray(self.base_background.copy())
         draw = ImageDraw.Draw(img)
 
         self._draw_brand_badge(img, draw)
-
-        ending = "感谢收看"
-        ending_font = self._get_font('title', 142)
-        eb = draw.textbbox((0, 0), ending, font=ending_font)
-        ex = (self.width - (eb[2] - eb[0])) // 2
-        ey = 310
-        draw.text(
-            (ex, ey),
-            ending,
-            font=ending_font,
-            fill=(248, 252, 255),
-            stroke_width=6,
-            stroke_fill=(35, 125, 208)
-        )
-
-        sub = "听闻天下 明天见"
-        sub_font = self._get_font('subtitle', 88)
-        sb = draw.textbbox((0, 0), sub, font=sub_font)
-        sx = (self.width - (sb[2] - sb[0])) // 2
-        draw.text(
-            (sx, 470),
-            sub,
-            font=sub_font,
-            fill=(255, 225, 70),
-            stroke_width=6,
-            stroke_fill=(150, 8, 8)
-        )
+        date_str = display_date or self._beijing_now().strftime("%m月%d日")
+        weekday_str = display_weekday or self._beijing_now().strftime("星期%w").replace("0", "日").replace("1", "一").replace("2", "二").replace("3", "三").replace("4", "四").replace("5", "五").replace("6", "六")
+        self._draw_main_title_block(draw, date_str, weekday_str)
 
         # 底部短字幕
         self._draw_subtitle(draw, subtitle or "")
@@ -931,9 +840,8 @@ class VideoGenerator:
         for idx, news in enumerate(normalized_news, 1):
             title = (news['title'] or '今日要闻').strip()[:28]
             summary = (news['summary'] or '').strip()[:36]
-            source_text = (news['source'] or '综合来源').strip()[:10]
 
-            tts_text = f"第{idx}条。{title}。{summary}。{source_text}。"
+            tts_text = f"第{idx}条。{title}。{summary}。"
             subtitle_text = f"{title}。{summary}。"
             subtitles = self._split_short_subtitles(subtitle_text, max_chars=14)
 
@@ -1024,10 +932,16 @@ class VideoGenerator:
                                 block['total'],
                                 progress,
                                 subtitle=subtitle,
-                                display_date=date_str
+                                display_date=date_str,
+                                display_weekday=weekday_str
                             )
                         else:
-                            frame = self.create_ending_frame(progress, subtitle=subtitle)
+                            frame = self.create_ending_frame(
+                                progress,
+                                subtitle=subtitle,
+                                display_date=date_str,
+                                display_weekday=weekday_str
+                            )
 
                         frame_path = os.path.join(frame_dir, f"frame_{total_frames:06d}.png")
                         Image.fromarray(frame).save(frame_path)
