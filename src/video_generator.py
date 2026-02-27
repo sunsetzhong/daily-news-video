@@ -374,7 +374,8 @@ class VideoGenerator:
             width=2
         )
         if self.logo_image is not None:
-            img.alpha_composite(self.logo_image, (left + 1, top + 1))
+            # `paste` with alpha mask works for both RGB and RGBA base images.
+            img.paste(self.logo_image, (left + 1, top + 1), self.logo_image)
         else:
             title_font = self._get_font('title', 68)
             draw.text(
