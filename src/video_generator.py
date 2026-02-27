@@ -8,6 +8,8 @@ import subprocess
 import json
 import asyncio
 import re
+from pathlib import Path
+import requests
 import edge_tts
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
 import numpy as np
@@ -46,8 +48,15 @@ class VideoGenerator:
         self.tts_rate = "+0%"
         self.tts_volume = "+0%"
 
+        # 断句模型配置（OpenAI兼容接口）
+        self.x666_base_url = os.getenv('X666_BASE_URL', 'https://x666.me/v1').rstrip('/')
+        self.x666_api_key = os.getenv('X666_API_KEY') or os.getenv('OPENAI_API_KEY', '')
+        self.x666_model = os.getenv('X666_MODEL', 'gemini-2.5-flash')
+        self.subtitle_split_cache: Dict[str, List[str]] = {}
+
         # 预渲染科技背景模板，减少每帧绘制开销
         self.base_background = self._create_tech_background()
+        self.logo_image = self._load_logo_image()
 
     def _beijing_now(self) -> datetime:
         """北京时间"""
@@ -121,16 +130,30 @@ class VideoGenerator:
             'source': source.strip() if source else ''
         }
 
-    def _split_short_subtitles(self, text: str, max_chars: int = 14) -> List[str]:
-        """将文案拆分为短字幕片段，便于与语音同步"""
-        if not text:
-            return []
+    def _load_logo_image(self) -> Optional[Image.Image]:
+        """加载左上角logo"""
+        logo_candidates = [
+            Path(self.assets_dir) / 'logo.png',
+            Path('logo.png'),
+            Path(__file__).resolve().parent.parent / 'logo.png',
+        ]
 
-        cleaned = re.sub(r'\s+', '', text).strip()
-        if not cleaned:
-            return []
+        for logo_path in logo_candidates:
+            if not logo_path.exists():
+                continue
+            try:
+                logo = Image.open(logo_path).convert('RGBA')
+                resample = Image.Resampling.LANCZOS if hasattr(Image, 'Resampling') else Image.LANCZOS
+                return logo.resize((156, 156), resample)
+            except Exception as e:
+                logger.warning(f"Failed to load logo {logo_path}: {e}")
 
-        parts = re.split(r'([。！？；：，、,.!?;:])', cleaned)
+        logger.warning("logo.png not found, fallback to text badge")
+        return None
+
+    def _split_short_subtitles_local(self, text: str, max_chars: int) -> List[str]:
+        """本地规则断句兜底"""
+        parts = re.split(r'([。！？；：，、,.!?;:])', text)
         sentences = []
         for i in range(0, len(parts), 2):
             sentence = parts[i]
@@ -148,7 +171,95 @@ class VideoGenerator:
             if rest:
                 chunks.append(rest)
 
-        return chunks or [cleaned[:max_chars]]
+        return chunks or [text[:max_chars]]
+
+    def _split_short_subtitles_by_llm(self, text: str, max_chars: int) -> List[str]:
+        """使用x666/gemini进行断句"""
+        if not self.x666_api_key:
+            return []
+
+        try:
+            url = f"{self.x666_base_url}/chat/completions"
+            payload = {
+                "model": self.x666_model,
+                "temperature": 0,
+                "messages": [
+                    {
+                        "role": "system",
+                        "content": (
+                            "你是中文新闻字幕断句助手。"
+                            "请严格保留原文信息，不改写、不扩写、不删除。"
+                            "把文本拆成适合字幕的短句。"
+                            "只输出JSON数组，例如：[\"句子1\",\"句子2\"]。"
+                        )
+                    },
+                    {
+                        "role": "user",
+                        "content": (
+                            f"请对这段文本断句，每句不超过{max_chars}个汉字，"
+                            f"尽量在自然停顿处分句，保留必要标点：\n{text}"
+                        )
+                    }
+                ]
+            }
+            headers = {
+                "Authorization": f"Bearer {self.x666_api_key}",
+                "Content-Type": "application/json",
+            }
+            response = requests.post(url, headers=headers, json=payload, timeout=30)
+            response.raise_for_status()
+            data = response.json()
+            content = (
+                data.get('choices', [{}])[0]
+                .get('message', {})
+                .get('content', '')
+                .strip()
+            )
+            if not content:
+                return []
+
+            # 兼容 ```json ... ``` 输出
+            fence_match = re.search(r'```(?:json)?\s*(.*?)\s*```', content, re.S)
+            if fence_match:
+                content = fence_match.group(1).strip()
+
+            parsed = json.loads(content)
+            if not isinstance(parsed, list):
+                return []
+
+            chunks: List[str] = []
+            for item in parsed:
+                line = str(item).strip()
+                if not line:
+                    continue
+                if len(line) <= max_chars:
+                    chunks.append(line)
+                else:
+                    chunks.extend(self._split_short_subtitles_local(line, max_chars))
+            return chunks
+        except Exception as e:
+            logger.warning(f"Subtitle split via x666 failed, fallback to local: {e}")
+            return []
+
+    def _split_short_subtitles(self, text: str, max_chars: int = 14) -> List[str]:
+        """将文案拆分为短字幕片段，优先使用模型断句"""
+        if not text:
+            return []
+
+        cleaned = re.sub(r'\s+', '', text).strip()
+        if not cleaned:
+            return []
+
+        cache_key = f"{max_chars}:{cleaned}"
+        if cache_key in self.subtitle_split_cache:
+            return list(self.subtitle_split_cache[cache_key])
+
+        chunks = self._split_short_subtitles_by_llm(cleaned, max_chars)
+        if not chunks:
+            chunks = self._split_short_subtitles_local(cleaned, max_chars)
+
+        self.subtitle_split_cache[cache_key] = list(chunks)
+        return chunks
 
     def _wrap_text_lines(self, draw: ImageDraw.Draw, text: str, font: ImageFont.FreeTypeFont,
                          max_width: int, max_lines: int) -> List[str]:
@@ -252,7 +363,7 @@ class VideoGenerator:
         img = Image.alpha_composite(img, overlay)
         return np.array(img.convert('RGB'))
 
-    def _draw_brand_badge(self, draw: ImageDraw.Draw):
+    def _draw_brand_badge(self, img: Image.Image, draw: ImageDraw.Draw):
         """左上角品牌角标"""
         left, top, right, bottom = 36, 24, 194, 210
         draw.rounded_rectangle(
@@ -262,27 +373,26 @@ class VideoGenerator:
             outline=(180, 220, 255),
             width=2
         )
-
-        title_font = self._get_font('title', 68)
-        draw.text(
-            (left + 18, top + 16),
-            "听闻",
-            font=title_font,
-            fill=(240, 246, 255),
-            stroke_width=3,
-            stroke_fill=(10, 45, 145)
-        )
-        draw.text(
-            (left + 18, top + 86),
-            "天下",
-            font=title_font,
-            fill=(248, 208, 130),
-            stroke_width=3,
-            stroke_fill=(65, 20, 10)
-        )
-
-        tag_font = self._get_font('subtitle', 32)
-        draw.text((left + 80, top + 132), "twtx", font=tag_font, fill=(222, 230, 245))
+        if self.logo_image is not None:
+            img.alpha_composite(self.logo_image, (left + 1, top + 1))
+        else:
+            title_font = self._get_font('title', 68)
+            draw.text(
+                (left + 18, top + 16),
+                "听闻",
+                font=title_font,
+                fill=(240, 246, 255),
+                stroke_width=3,
+                stroke_fill=(10, 45, 145)
+            )
+            draw.text(
+                (left + 18, top + 86),
+                "天下",
+                font=title_font,
+                fill=(248, 208, 130),
+                stroke_width=3,
+                stroke_fill=(65, 20, 10)
+            )
 
     def _draw_main_title_block(self, draw: ImageDraw.Draw, date_str: str, weekday_str: str):
         """开场主标题 + 日期块"""
@@ -381,7 +491,7 @@ class VideoGenerator:
         img = Image.fromarray(self.base_background.copy())
         draw = ImageDraw.Draw(img)
 
-        self._draw_brand_badge(draw)
+        self._draw_brand_badge(img, draw)
 
         if is_intro:
             self._draw_main_title_block(draw, date_str, weekday_str)
@@ -517,7 +627,7 @@ class VideoGenerator:
         img = Image.fromarray(self.base_background.copy())
         draw = ImageDraw.Draw(img)
 
-        self._draw_brand_badge(draw)
+        self._draw_brand_badge(img, draw)
 
         # 顶部节目名
         program_font = self._get_font('title', 96)
@@ -599,7 +709,7 @@ class VideoGenerator:
         img = Image.fromarray(self.base_background.copy())
         draw = ImageDraw.Draw(img)
 
-        self._draw_brand_badge(draw)
+        self._draw_brand_badge(img, draw)
 
         ending = "感谢收看"
         ending_font = self._get_font('title', 142)
