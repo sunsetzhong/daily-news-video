@@ -563,10 +563,11 @@ class VideoGenerator:
 
     def concat_audio_segments(self, audio_paths: List[str], output_path: str):
         """合并音频片段"""
-        list_path = os.path.join(self.temp_dir, 'audio_segments.txt')
+        list_path = os.path.abspath(os.path.join(self.temp_dir, 'audio_segments.txt'))
         with open(list_path, 'w', encoding='utf-8') as f:
             for path in audio_paths:
-                escaped = path.replace("'", "'\\''")
+                absolute_path = os.path.abspath(path)
+                escaped = absolute_path.replace("'", "'\\''")
                 f.write(f"file '{escaped}'\n")
 
         cmd = [
