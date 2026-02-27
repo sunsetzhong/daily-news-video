@@ -11,7 +11,7 @@ import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from html import unescape
-from typing import List, Dict, Optional
+from typing import Any, List, Dict, Optional
 from dataclasses import dataclass
 import logging
 
@@ -41,6 +41,9 @@ class NewsFetcher:
         })
         self.news_api_key = os.getenv('NEWS_API_KEY', '')
         self.allow_mock_fallback = os.getenv('ALLOW_MOCK_NEWS_FALLBACK', 'false').lower() == 'true'
+        self.x666_base_url = os.getenv('X666_BASE_URL', 'https://x666.me/v1').rstrip('/')
+        self.x666_api_key = os.getenv('X666_API_KEY') or os.getenv('OPENAI_API_KEY', '')
+        self.x666_model = os.getenv('X666_MODEL', 'gemini-2.5-flash')
 
     def _strip_html(self, text: str) -> str:
         """移除HTML标签"""
@@ -89,6 +92,222 @@ class NewsFetcher:
             if node is not None and node.text:
                 return node.text.strip()
         return ''
+
+    def _is_international_news(self, news: NewsItem) -> bool:
+        """粗粒度判断国际新闻"""
+        source = (news.source or '').lower()
+        text = f"{news.title} {news.summary}".lower()
+
+        international_sources = [
+            'reuters', 'ap', 'associated press', 'bbc', 'cnn', 'bloomberg',
+            'financial times', 'the guardian', 'nyt', 'new york times',
+            '华尔街', '路透', '彭博', '法新社', '联合早报', 'bbc', 'cnn'
+        ]
+        if any(keyword in source for keyword in international_sources):
+            return True
+
+        international_keywords = [
+            '美国', '日本', '欧洲', '欧盟', '英国', '法国', '德国', '俄罗斯', '乌克兰',
+            '中东', '以色列', '巴勒斯坦', '联合国', '北约', '国际', 'global', 'world'
+        ]
+        domestic_keywords = ['中国', '国内', '国务院', '发改委', '央行', '上海', '北京', '深圳', '广州']
+
+        if any(k in text for k in domestic_keywords):
+            return False
+        if any(k in text for k in international_keywords):
+            return True
+
+        return False
+
+    def _build_local_script(self, news_items: List[NewsItem], date_str: str, weekday_str: str) -> Dict:
+        """本地兜底脚本生成（无AI）"""
+        domestic = [n for n in news_items if not self._is_international_news(n)]
+        international = [n for n in news_items if self._is_international_news(n)]
+
+        # 保证两组都尽量有内容
+        if not domestic and international:
+            domestic, international = international[: max(1, len(international) // 2)], international[max(1, len(international) // 2):]
+        if not international and domestic:
+            international = domestic[-2:]
+            domestic = domestic[:-2] if len(domestic) > 2 else domestic
+
+        opening = f"欢迎收听听闻天下，今天是{date_str}，{weekday_str}。先看国内新闻。"
+
+        domestic_items = []
+        for news in domestic:
+            content = f"{news.title}。{news.summary}".strip('。') + "。"
+            domestic_items.append({
+                'section': 'domestic',
+                'title': news.title,
+                'content': content,
+                'subtitle': content,
+                'source': news.source
+            })
+
+        international_items = []
+        for news in international:
+            content = f"{news.title}。{news.summary}".strip('。') + "。"
+            international_items.append({
+                'section': 'international',
+                'title': news.title,
+                'content': content,
+                'subtitle': content,
+                'source': news.source
+            })
+
+        closing = "以上就是今天的新闻播报，感谢收听，我们明天再见。"
+        full_script_parts = [opening]
+        if domestic_items:
+            full_script_parts.extend([item['content'] for item in domestic_items])
+        if international_items:
+            full_script_parts.append("接下来关注国际新闻。")
+            full_script_parts.extend([item['content'] for item in international_items])
+        full_script_parts.append(closing)
+
+        all_items = domestic_items + international_items
+        return {
+            'date': date_str,
+            'weekday': weekday_str,
+            'opening': opening,
+            'domestic_news': domestic_items,
+            'international_news': international_items,
+            'news': all_items,
+            'closing': closing,
+            'full_script': " ".join(full_script_parts)
+        }
+
+    def _strip_json_fence(self, text: str) -> str:
+        match = re.search(r'```(?:json)?\s*(.*?)\s*```', text, re.S)
+        return match.group(1).strip() if match else text.strip()
+
+    def _call_ai_script_optimizer(self, news_items: List[NewsItem], date_str: str, weekday_str: str) -> Optional[Dict]:
+        """一次AI请求生成完整脚本（去重、分组、润色）"""
+        if not self.x666_api_key:
+            return None
+
+        items_payload = []
+        for news in news_items:
+            items_payload.append({
+                'title': news.title,
+                'summary': news.summary,
+                'source': news.source,
+                'publish_time': news.publish_time
+            })
+
+        system_prompt = (
+            "你是中文新闻播报总编。请基于输入新闻生成可直接播报的结构化JSON。"
+            "硬性要求："
+            "1) 绝对不要使用“第一条/1./2.”等编号；"
+            "2) 去除重复信息；"
+            "3) 分成“国内新闻”和“国际新闻”；"
+            "4) 每条content精炼、自然口播，避免模板腔；"
+            "5) 仅返回JSON，不要Markdown。"
+            "JSON格式："
+            "{"
+            "\"opening\":\"...\","
+            "\"domestic_news\":[{\"title\":\"...\",\"content\":\"...\",\"subtitle\":\"...\"}],"
+            "\"international_news\":[{\"title\":\"...\",\"content\":\"...\",\"subtitle\":\"...\"}],"
+            "\"closing\":\"...\""
+            "}"
+        )
+
+        user_prompt = json.dumps({
+            'date': date_str,
+            'weekday': weekday_str,
+            'news_items': items_payload
+        }, ensure_ascii=False)
+
+        payload = {
+            'model': self.x666_model,
+            'temperature': 0.2,
+            'messages': [
+                {'role': 'system', 'content': system_prompt},
+                {'role': 'user', 'content': user_prompt},
+            ]
+        }
+        headers = {
+            'Authorization': f'Bearer {self.x666_api_key}',
+            'Content-Type': 'application/json',
+        }
+
+        try:
+            response = requests.post(
+                f"{self.x666_base_url}/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=45
+            )
+            response.raise_for_status()
+            data = response.json()
+            content = (
+                data.get('choices', [{}])[0]
+                .get('message', {})
+                .get('content', '')
+            )
+            if not content:
+                return None
+            parsed = json.loads(self._strip_json_fence(content))
+            if not isinstance(parsed, dict):
+                return None
+
+            opening = str(parsed.get('opening', '')).strip()
+            closing = str(parsed.get('closing', '')).strip()
+            domestic_raw = parsed.get('domestic_news', [])
+            international_raw = parsed.get('international_news', [])
+
+            def normalize_items(raw_items: Any, section: str) -> List[Dict]:
+                normalized = []
+                if not isinstance(raw_items, list):
+                    return normalized
+                for item in raw_items:
+                    if not isinstance(item, dict):
+                        continue
+                    title = str(item.get('title', '')).strip()
+                    content_text = str(item.get('content', '')).strip()
+                    subtitle = str(item.get('subtitle', '')).strip()
+                    if not content_text:
+                        continue
+                    normalized.append({
+                        'section': section,
+                        'title': title or content_text[:24],
+                        'content': content_text,
+                        'subtitle': subtitle or content_text,
+                        'source': ''
+                    })
+                return normalized
+
+            domestic_news = normalize_items(domestic_raw, 'domestic')
+            international_news = normalize_items(international_raw, 'international')
+            if not domestic_news and not international_news:
+                return None
+
+            if not opening:
+                opening = f"欢迎收听听闻天下，今天是{date_str}，{weekday_str}。先看国内新闻。"
+            if not closing:
+                closing = "以上就是今天的新闻播报，感谢收听，我们明天再见。"
+
+            all_news = domestic_news + international_news
+            full_script_parts = [opening]
+            if domestic_news:
+                full_script_parts.extend([n['content'] for n in domestic_news])
+            if international_news:
+                full_script_parts.append("接下来关注国际新闻。")
+                full_script_parts.extend([n['content'] for n in international_news])
+            full_script_parts.append(closing)
+
+            return {
+                'date': date_str,
+                'weekday': weekday_str,
+                'opening': opening,
+                'domestic_news': domestic_news,
+                'international_news': international_news,
+                'news': all_news,
+                'closing': closing,
+                'full_script': " ".join(full_script_parts)
+            }
+        except Exception as e:
+            logger.warning(f"AI script optimization failed, fallback to local: {e}")
+            return None
 
     def fetch_from_rss(self, url: str, source: str, category: str = 'general',
                        limit: int = 15, recency_hours: int = 36) -> List[NewsItem]:
@@ -434,32 +653,11 @@ class NewsFetcher:
         today = self._beijing_now()
         date_str = today.strftime("%m月%d日")
         weekday_str = ["星期一", "星期二", "星期三", "星期四", "星期五", "星期六", "星期日"][today.weekday()]
-        
-        # 开场白
-        opening = f"欢迎收听听闻天下，今天是{date_str}，{weekday_str}。每日五分钟，听闻天下事。"
-        
-        # 新闻内容
-        news_content = []
-        for i, news in enumerate(news_items, 1):
-            news_text = f"第{i}条新闻：{news.title}。{news.summary}"
-            news_content.append({
-                'index': i,
-                'title': news.title,
-                'content': news_text,
-                'source': news.source
-            })
-        
-        # 结束语
-        closing = "以上就是今天的新闻播报，感谢收听听闻天下，我们明天再见。"
-        
-        return {
-            'date': date_str,
-            'weekday': weekday_str,
-            'opening': opening,
-            'news': news_content,
-            'closing': closing,
-            'full_script': opening + " " + " ".join([n['content'] for n in news_content]) + " " + closing
-        }
+
+        ai_script = self._call_ai_script_optimizer(news_items, date_str, weekday_str)
+        if ai_script:
+            return ai_script
+        return self._build_local_script(news_items, date_str, weekday_str)
     
     def fetch_all_news(self, use_mock: bool = False) -> Dict:
         """获取所有新闻并生成脚本"""

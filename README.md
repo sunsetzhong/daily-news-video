@@ -48,7 +48,7 @@ cd daily-news-video
 
 | Secret | 说明 | 必需 |
 |--------|------|------|
-| `X666_API_KEY` | x666 OpenAI兼容接口密钥（用于 Gemini 断句） | 推荐 |
+| `X666_API_KEY` | x666 OpenAI兼容接口密钥（用于 Gemini 文案优化） | 推荐 |
 | `NEWS_API_KEY` | NewsAPI 的 API Key | 可选 |
 | `TTS_VOICE` | Edge TTS 语音选择，默认 `zh-CN-XiaoxiaoNeural` | 可选 |
 
@@ -120,9 +120,9 @@ daily-news-video/
 
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
-| `X666_API_KEY` | - | x666 API 密钥（字幕断句） |
+| `X666_API_KEY` | - | x666 API 密钥（文案优化：去重/分组/润色） |
 | `X666_BASE_URL` | `https://x666.me/v1` | x666 OpenAI兼容接口地址 |
-| `X666_MODEL` | `gemini-2.5-flash` | 断句模型 |
+| `X666_MODEL` | `gemini-2.5-flash` | 文案优化模型 |
 | `NEWS_API_KEY` | - | NewsAPI 密钥 |
 | `TTS_VOICE` | `zh-CN-XiaoxiaoNeural` | TTS 语音 |
 | `USE_MOCK_NEWS` | `false` | 使用模拟数据 |

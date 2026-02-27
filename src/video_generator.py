@@ -52,6 +52,7 @@ class VideoGenerator:
         self.x666_base_url = os.getenv('X666_BASE_URL', 'https://x666.me/v1').rstrip('/')
         self.x666_api_key = os.getenv('X666_API_KEY') or os.getenv('OPENAI_API_KEY', '')
         self.x666_model = os.getenv('X666_MODEL', 'gemini-2.5-flash')
+        self.enable_ai_subtitle_split = os.getenv('ENABLE_AI_SUBTITLE_SPLIT', 'false').lower() == 'true'
         self.subtitle_split_cache: Dict[str, List[str]] = {}
 
         # 预渲染科技背景模板，减少每帧绘制开销
@@ -254,8 +255,11 @@ class VideoGenerator:
         if cache_key in self.subtitle_split_cache:
             return list(self.subtitle_split_cache[cache_key])
 
-        chunks = self._split_short_subtitles_by_llm(cleaned, max_chars)
-        if not chunks:
+        if self.enable_ai_subtitle_split:
+            chunks = self._split_short_subtitles_by_llm(cleaned, max_chars)
+            if not chunks:
+                chunks = self._split_short_subtitles_local(cleaned, max_chars)
+        else:
             chunks = self._split_short_subtitles_local(cleaned, max_chars)
 
         self.subtitle_split_cache[cache_key] = list(chunks)
@@ -834,25 +838,86 @@ class VideoGenerator:
             'subtitles': opening_subtitles or ['欢迎收听听闻天下。']
         })
 
-        if news_count == 0:
-            logger.warning("No news items provided, generating intro/outro only video")
+        domestic_script = script.get('domestic_news', [])
+        international_script = script.get('international_news', [])
+        script_news = script.get('news', [])
 
-        for idx, news in enumerate(normalized_news, 1):
-            title = (news['title'] or '今日要闻').strip()[:28]
-            summary = (news['summary'] or '').strip()[:36]
+        # 兼容旧脚本结构：从 `news` 字段推断分组
+        if not domestic_script and not international_script and isinstance(script_news, list):
+            for item in script_news:
+                if not isinstance(item, dict):
+                    continue
+                section = str(item.get('section', 'domestic')).strip().lower()
+                if section == 'international':
+                    international_script.append(item)
+                else:
+                    domestic_script.append(item)
 
-            tts_text = f"第{idx}条。{title}。{summary}。"
-            subtitle_text = f"{title}。{summary}。"
-            subtitles = self._split_short_subtitles(subtitle_text, max_chars=14)
+        # 若脚本中无AI产出的结构，兜底使用原始新闻
+        if not domestic_script and not international_script and normalized_news:
+            for news in normalized_news:
+                title = (news['title'] or '今日要闻').strip()[:28]
+                summary = (news['summary'] or '').strip()[:36]
+                domestic_script.append({
+                    'title': title,
+                    'content': f"{title}。{summary}。",
+                    'subtitle': f"{title}。{summary}。",
+                    'section': 'domestic'
+                })
 
-            blocks.append({
-                'scene': 'news',
-                'tts_text': tts_text,
-                'subtitles': subtitles or [title],
-                'news': news,
-                'index': idx,
-                'total': news_count
-            })
+        total_script_news = len(domestic_script) + len(international_script)
+        if total_script_news == 0:
+            logger.warning("No news blocks provided, generating intro/outro only video")
+        else:
+            if domestic_script:
+                section_text = "先看国内新闻。"
+                blocks.append({
+                    'scene': 'news',
+                    'tts_text': section_text,
+                    'subtitles': self._split_short_subtitles("国内新闻", max_chars=14),
+                    'news': {},
+                    'index': 1,
+                    'total': max(total_script_news, 1)
+                })
+
+                for idx, item in enumerate(domestic_script, 1):
+                    content = str(item.get('content', '')).strip()
+                    subtitle_text = str(item.get('subtitle', '')).strip() or content
+                    if not content:
+                        continue
+                    blocks.append({
+                        'scene': 'news',
+                        'tts_text': content,
+                        'subtitles': self._split_short_subtitles(subtitle_text, max_chars=14) or [subtitle_text[:14]],
+                        'news': {},
+                        'index': idx,
+                        'total': max(total_script_news, 1)
+                    })
+
+            if international_script:
+                section_text = "再看国际新闻。"
+                blocks.append({
+                    'scene': 'news',
+                    'tts_text': section_text,
+                    'subtitles': self._split_short_subtitles("国际新闻", max_chars=14),
+                    'news': {},
+                    'index': max(len(domestic_script), 1),
+                    'total': max(total_script_news, 1)
+                })
+
+                for idx, item in enumerate(international_script, len(domestic_script) + 1):
+                    content = str(item.get('content', '')).strip()
+                    subtitle_text = str(item.get('subtitle', '')).strip() or content
+                    if not content:
+                        continue
+                    blocks.append({
+                        'scene': 'news',
+                        'tts_text': content,
+                        'subtitles': self._split_short_subtitles(subtitle_text, max_chars=14) or [subtitle_text[:14]],
+                        'news': {},
+                        'index': idx,
+                        'total': max(total_script_news, 1)
+                    })
 
         closing_text = script.get('closing', '以上就是今天的新闻播报，感谢收听，我们明天再见。')
         closing_subtitles = self._split_short_subtitles(closing_text, max_chars=14)
