@@ -46,6 +46,9 @@ class VideoGenerator:
         self.tts_rate = "+0%"
         self.tts_volume = "+0%"
 
+        # 预渲染科技背景模板，减少每帧绘制开销
+        self.base_background = self._create_tech_background()
+
     def _beijing_now(self) -> datetime:
         """北京时间"""
         return datetime.now(timezone(timedelta(hours=8)))
@@ -172,64 +175,217 @@ class VideoGenerator:
 
         return lines
 
+    def _create_tech_background(self) -> np.ndarray:
+        """创建蓝色科技风背景模板（一次生成，多帧复用）"""
+        img = Image.new('RGBA', (self.width, self.height), (5, 22, 110, 255))
+        draw = ImageDraw.Draw(img)
+
+        # 蓝色渐变
+        top = np.array([3, 20, 105], dtype=float)
+        mid = np.array([8, 52, 170], dtype=float)
+        bottom = np.array([9, 78, 190], dtype=float)
+        for y in range(self.height):
+            t = y / max(self.height - 1, 1)
+            if t < 0.55:
+                k = t / 0.55
+                color = top * (1 - k) + mid * k
+            else:
+                k = (t - 0.55) / 0.45
+                color = mid * (1 - k) + bottom * k
+            draw.line([(0, y), (self.width, y)], fill=tuple(int(v) for v in color))
+
+        overlay = Image.new('RGBA', (self.width, self.height), (0, 0, 0, 0))
+        od = ImageDraw.Draw(overlay)
+
+        # 左侧镜头光
+        flare_center = (-120, int(self.height * 0.70))
+        for r in range(420, 40, -32):
+            alpha = int(140 * (r / 420) ** 2)
+            od.ellipse(
+                [flare_center[0] - r, flare_center[1] - r, flare_center[0] + r, flare_center[1] + r],
+                fill=(80, 200, 255, alpha)
+            )
+
+        # 科技网格节点
+        rng = np.random.default_rng(20260227)
+        nodes = []
+        for _ in range(72):
+            nodes.append((
+                int(rng.uniform(110, self.width - 110)),
+                int(rng.uniform(70, self.height - 70))
+            ))
+
+        max_dist2 = 280 * 280
+        for i in range(len(nodes)):
+            x1, y1 = nodes[i]
+            for j in range(i + 1, len(nodes)):
+                x2, y2 = nodes[j]
+                dx = x2 - x1
+                dy = y2 - y1
+                d2 = dx * dx + dy * dy
+                if d2 <= max_dist2:
+                    alpha = int(120 * (1 - d2 / max_dist2))
+                    od.line([(x1, y1), (x2, y2)], fill=(140, 205, 255, alpha), width=2)
+
+        for x, y in nodes:
+            od.ellipse([x - 4, y - 4, x + 4, y + 4], fill=(230, 245, 255, 220))
+            od.ellipse([x - 10, y - 10, x + 10, y + 10], outline=(150, 210, 255, 90), width=1)
+
+        # 中央波形网格
+        cx = int(self.width * 0.44)
+        for i in range(-18, 19):
+            x0 = cx + i * 18
+            pts = []
+            for y in range(-30, self.height + 30, 18):
+                offset = int(34 * np.sin((y / 130.0) + i * 0.32))
+                pts.append((x0 + offset, y))
+            od.line(pts, fill=(185, 225, 255, 70), width=2)
+
+        for j in range(8, 46):
+            y0 = j * 22
+            pts = []
+            for x in range(180, self.width - 120, 22):
+                offset = int(22 * np.sin((x / 140.0) + j * 0.18))
+                pts.append((x, y0 + offset))
+            od.line(pts, fill=(180, 220, 255, 42), width=1)
+
+        img = Image.alpha_composite(img, overlay)
+        return np.array(img.convert('RGB'))
+
+    def _draw_brand_badge(self, draw: ImageDraw.Draw):
+        """左上角品牌角标"""
+        left, top, right, bottom = 36, 24, 194, 210
+        draw.rounded_rectangle(
+            [left, top, right, bottom],
+            radius=18,
+            fill=(8, 30, 105),
+            outline=(180, 220, 255),
+            width=2
+        )
+
+        title_font = self._get_font('title', 68)
+        draw.text(
+            (left + 18, top + 16),
+            "听闻",
+            font=title_font,
+            fill=(240, 246, 255),
+            stroke_width=3,
+            stroke_fill=(10, 45, 145)
+        )
+        draw.text(
+            (left + 18, top + 86),
+            "天下",
+            font=title_font,
+            fill=(248, 208, 130),
+            stroke_width=3,
+            stroke_fill=(65, 20, 10)
+        )
+
+        tag_font = self._get_font('subtitle', 32)
+        draw.text((left + 80, top + 132), "twtx", font=tag_font, fill=(222, 230, 245))
+
+    def _draw_main_title_block(self, draw: ImageDraw.Draw, date_str: str, weekday_str: str):
+        """开场主标题 + 日期块"""
+        title = "听闻天下"
+        title_font = self._get_font('title', 188)
+        bbox = draw.textbbox((0, 0), title, font=title_font)
+        title_w = bbox[2] - bbox[0]
+        tx = (self.width - title_w) // 2
+        ty = 125
+
+        # 立体蓝色阴影
+        for depth in range(12, 0, -2):
+            draw.text(
+                (tx + depth, ty + depth),
+                title,
+                font=title_font,
+                fill=(32, 120, 215),
+                stroke_width=2,
+                stroke_fill=(20, 70, 160)
+            )
+
+        draw.text(
+            (tx, ty),
+            title,
+            font=title_font,
+            fill=(248, 252, 255),
+            stroke_width=4,
+            stroke_fill=(35, 130, 225)
+        )
+
+        # 红色日期（白描边）
+        date_font = self._get_font('title', 150)
+        week_font = self._get_font('title', 148)
+        date_bbox = draw.textbbox((0, 0), date_str, font=date_font)
+        week_bbox = draw.textbbox((0, 0), weekday_str, font=week_font)
+        dx = (self.width - (date_bbox[2] - date_bbox[0])) // 2
+        wx = (self.width - (week_bbox[2] - week_bbox[0])) // 2
+
+        draw.text(
+            (dx, 410),
+            date_str,
+            font=date_font,
+            fill=(244, 28, 28),
+            stroke_width=12,
+            stroke_fill=(248, 248, 255)
+        )
+        draw.text(
+            (wx, 560),
+            weekday_str,
+            font=week_font,
+            fill=(244, 28, 28),
+            stroke_width=12,
+            stroke_fill=(248, 248, 255)
+        )
+
     def _draw_subtitle(self, draw: ImageDraw.Draw, subtitle: str):
         """绘制底部短字幕"""
         if not subtitle:
             return
 
-        subtitle_font = self._get_font('body', 52)
+        subtitle_font = self._get_font('title', 92)
         text = subtitle.strip()
-        max_text_width = self.width - 240
+        max_text_width = self.width - 150
         lines = self._wrap_text_lines(draw, text, subtitle_font, max_text_width, max_lines=2)
         if not lines:
             return
 
-        line_height = 64
-        box_padding_x = 36
-        box_padding_y = 26
-        box_height = len(lines) * line_height + box_padding_y * 2
-        box_top = self.height - box_height - 36
-        box_left = 80
-        box_right = self.width - 80
-        box_bottom = self.height - 36
-
-        draw.rounded_rectangle(
-            [box_left, box_top, box_right, box_bottom],
-            radius=24,
-            fill=(12, 16, 28)
-        )
-
+        line_height = 108
+        start_y = self.height - 220 - (len(lines) - 1) * line_height
         for i, line in enumerate(lines):
             bbox = draw.textbbox((0, 0), line, font=subtitle_font)
             line_width = bbox[2] - bbox[0]
             x = (self.width - line_width) // 2
-            y = box_top + box_padding_y + i * line_height
-            draw.text((x, y), line, font=subtitle_font, fill=(245, 245, 245))
+            y = start_y + i * line_height
+            draw.text(
+                (x + 4, y + 5),
+                line,
+                font=subtitle_font,
+                fill=(60, 0, 0),
+                stroke_width=12,
+                stroke_fill=(40, 0, 0)
+            )
+            draw.text(
+                (x, y),
+                line,
+                font=subtitle_font,
+                fill=(255, 224, 60),
+                stroke_width=10,
+                stroke_fill=(175, 8, 8)
+            )
     
     def create_background_frame(self, date_str: str, weekday_str: str,
                                 progress: float = 0, is_intro: bool = True,
                                 subtitle: Optional[str] = None) -> np.ndarray:
         """创建背景帧"""
-        # 创建深蓝色渐变背景
-        img = Image.new('RGB', (self.width, self.height), color='#0a1628')
+        img = Image.fromarray(self.base_background.copy())
         draw = ImageDraw.Draw(img)
-        
-        # 绘制渐变效果
-        for y in range(self.height):
-            # 从顶部深蓝到底部稍浅的蓝色
-            r = int(10 + (y / self.height) * 15)
-            g = int(22 + (y / self.height) * 20)
-            b = int(40 + (y / self.height) * 30)
-            draw.line([(0, y), (self.width, y)], fill=(r, g, b))
-        
-        # 添加网点纹理
-        self._add_dot_pattern(img)
-        
-        # 如果是开场画面，添加标题和日期
-        if is_intro:
-            self._draw_title(draw, date_str, weekday_str)
 
-        # 底部短字幕
+        self._draw_brand_badge(draw)
+
+        if is_intro:
+            self._draw_main_title_block(draw, date_str, weekday_str)
+
         self._draw_subtitle(draw, subtitle or "")
         
         return np.array(img)
@@ -358,135 +514,119 @@ class VideoGenerator:
                           subtitle: Optional[str] = None,
                           display_date: Optional[str] = None) -> np.ndarray:
         """创建新闻内容帧"""
-        # 创建背景
-        img = Image.new('RGB', (self.width, self.height), color='#0a1628')
+        img = Image.fromarray(self.base_background.copy())
         draw = ImageDraw.Draw(img)
-        
-        # 绘制渐变背景
-        for y in range(self.height):
-            r = int(10 + (y / self.height) * 15)
-            g = int(22 + (y / self.height) * 20)
-            b = int(40 + (y / self.height) * 30)
-            draw.line([(0, y), (self.width, y)], fill=(r, g, b))
-        
-        # 添加纹理
-        self._add_dot_pattern(img)
-        
-        # 绘制顶部标题栏
-        header_height = 120
-        draw.rectangle([0, 0, self.width, header_height], 
-                      fill=(0, 0, 0, 100))
-        
-        # 节目名称
-        program_font = self._get_font('title', 50)
-        draw.text((50, 30), "听闻天下", font=program_font, fill='white')
-        
-        # 日期
+
+        self._draw_brand_badge(draw)
+
+        # 顶部节目名
+        program_font = self._get_font('title', 96)
+        header_text = "听闻天下"
+        hb = draw.textbbox((0, 0), header_text, font=program_font)
+        hx = (self.width - (hb[2] - hb[0])) // 2
+        draw.text(
+            (hx, 64),
+            header_text,
+            font=program_font,
+            fill=(246, 251, 255),
+            stroke_width=4,
+            stroke_fill=(48, 145, 225)
+        )
+
+        # 日期与条数
         date_str = display_date or self._beijing_now().strftime("%m月%d日")
-        date_font = self._get_font('body', 30)
-        draw.text((self.width - 200, 45), date_str, font=date_font, fill='#ff3333')
-        
-        # 新闻序号指示器
-        indicator_text = f"{index} / {total}"
-        indicator_font = self._get_font('body', 25)
-        bbox = draw.textbbox((0, 0), indicator_text, font=indicator_font)
-        indicator_width = bbox[2] - bbox[0]
-        draw.text((self.width - 150 - indicator_width, 85), 
-                 indicator_text, font=indicator_font, fill='#aaaaaa')
-        
+        date_font = self._get_font('subtitle', 52)
+        indicator_font = self._get_font('subtitle', 48)
+        draw.text(
+            (self.width - 360, 74),
+            date_str,
+            font=date_font,
+            fill=(246, 30, 30),
+            stroke_width=4,
+            stroke_fill=(246, 246, 250)
+        )
+        draw.text(
+            (self.width - 360, 128),
+            f"{index}/{max(total, 1)}",
+            font=indicator_font,
+            fill=(230, 240, 252)
+        )
+
         normalized = self._normalize_news_item(news_item)
-        title = normalized['title']
-        content = normalized['summary']
+        title = normalized['title'] or "今日要闻"
+        content = normalized['summary'] or "暂无详细内容。"
+        source = normalized['source'] or "综合来源"
 
-        if not title:
-            title = "今日要闻"
-        if not content:
-            content = "暂无详细内容。"
+        # 中央新闻标题（白字蓝描边）
+        title_font = self._get_font('title', 82)
+        title_lines = self._wrap_text_lines(draw, title, title_font, self.width - 260, max_lines=2)
+        title_y = 300
+        for i, line in enumerate(title_lines):
+            bbox = draw.textbbox((0, 0), line, font=title_font)
+            tx = (self.width - (bbox[2] - bbox[0])) // 2
+            ty = title_y + i * 92
+            draw.text(
+                (tx, ty),
+                line,
+                font=title_font,
+                fill=(248, 252, 255),
+                stroke_width=5,
+                stroke_fill=(35, 120, 205)
+            )
 
-        # 字幕优先显示当前语音片段，保证字幕与语音同步
-        if subtitle:
-            content = subtitle
-
-        # 绘制新闻标题
-        title_font = self._get_font('title', 55)
-        
-        # 自动换行处理标题
-        max_title_width = self.width - 200
-        words = self._wrap_text_lines(draw, title, title_font, max_title_width, max_lines=2)
-        
-        title_y = 200
-        for i, line in enumerate(words[:2]):  # 最多两行
-            # 金色标题效果
-            self._draw_golden_text(draw, line, 100, title_y + i * 70, title_font)
-        
-        # 绘制新闻内容
-        content_font = self._get_font('body', 35)
-        
-        # 自动换行处理内容
-        max_content_width = self.width - 200
-        content_lines = self._wrap_text_lines(draw, content, content_font, max_content_width, max_lines=3)
-        
-        content_y = 400
-        for i, line in enumerate(content_lines[:6]):  # 最多6行
-            draw.text((100, content_y + i * 50), line, 
-                     font=content_font, fill='#e0e0e0')
-        
-        # 绘制进度条
-        bar_y = self.height - 80
-        bar_width = self.width - 200
-        bar_height = 8
-        
-        # 背景条
-        draw.rectangle([100, bar_y, 100 + bar_width, bar_y + bar_height],
-                      fill='#333333', outline=None)
-        
-        # 进度条
-        safe_total = max(total, 1)
-        progress_width = int(bar_width * (index / safe_total))
-        draw.rectangle([100, bar_y, 100 + progress_width, bar_y + bar_height],
-                      fill='#ff3333', outline=None)
+        # 来源信息
+        source_font = self._get_font('body', 42)
+        source_text = f"来源：{source}"
+        sb = draw.textbbox((0, 0), source_text, font=source_font)
+        sx = (self.width - (sb[2] - sb[0])) // 2
+        draw.rounded_rectangle(
+            [sx - 24, 520, sx + (sb[2] - sb[0]) + 24, 590],
+            radius=20,
+            fill=(5, 40, 120),
+            outline=(170, 220, 255),
+            width=2
+        )
+        draw.text((sx, 534), source_text, font=source_font, fill=(235, 244, 255))
 
         # 底部短字幕
-        self._draw_subtitle(draw, subtitle or "")
+        self._draw_subtitle(draw, subtitle or content)
         
         return np.array(img)
     
     def create_ending_frame(self, progress: float,
                             subtitle: Optional[str] = None) -> np.ndarray:
         """创建结束帧"""
-        img = Image.new('RGB', (self.width, self.height), color='#0a1628')
+        img = Image.fromarray(self.base_background.copy())
         draw = ImageDraw.Draw(img)
-        
-        # 绘制渐变背景
-        for y in range(self.height):
-            r = int(10 + (y / self.height) * 15)
-            g = int(22 + (y / self.height) * 20)
-            b = int(40 + (y / self.height) * 30)
-            draw.line([(0, y), (self.width, y)], fill=(r, g, b))
-        
-        self._add_dot_pattern(img)
-        
-        # 结束语
-        ending = "感谢收听听闻天下"
-        ending_font = self._get_font('title', 80)
-        
-        bbox = draw.textbbox((0, 0), ending, font=ending_font)
-        text_width = bbox[2] - bbox[0]
-        text_x = (self.width - text_width) // 2
-        text_y = self.height // 2 - 100
-        
-        self._draw_golden_text(draw, ending, text_x, text_y, ending_font)
-        
-        # 副标题
-        sub = "我们明天再见"
-        sub_font = self._get_font('subtitle', 50)
-        
-        bbox = draw.textbbox((0, 0), sub, font=sub_font)
-        sub_width = bbox[2] - bbox[0]
-        sub_x = (self.width - sub_width) // 2
-        sub_y = text_y + 150
-        
-        draw.text((sub_x, sub_y), sub, font=sub_font, fill='#cccccc')
+
+        self._draw_brand_badge(draw)
+
+        ending = "感谢收看"
+        ending_font = self._get_font('title', 142)
+        eb = draw.textbbox((0, 0), ending, font=ending_font)
+        ex = (self.width - (eb[2] - eb[0])) // 2
+        ey = 310
+        draw.text(
+            (ex, ey),
+            ending,
+            font=ending_font,
+            fill=(248, 252, 255),
+            stroke_width=6,
+            stroke_fill=(35, 125, 208)
+        )
+
+        sub = "听闻天下 明天见"
+        sub_font = self._get_font('subtitle', 88)
+        sb = draw.textbbox((0, 0), sub, font=sub_font)
+        sx = (self.width - (sb[2] - sb[0])) // 2
+        draw.text(
+            (sx, 470),
+            sub,
+            font=sub_font,
+            fill=(255, 225, 70),
+            stroke_width=6,
+            stroke_fill=(150, 8, 8)
+        )
 
         # 底部短字幕
         self._draw_subtitle(draw, subtitle or "")
