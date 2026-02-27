@@ -592,18 +592,33 @@ class VideoGenerator:
                         duration: float, audio_path: str = None):
         """将帧序列转换为视频"""
         import tempfile
+        import shutil
         
         # 保存帧为临时图片
         frame_dir = tempfile.mkdtemp()
-        frame_files = []
-        
-        for i, frame in enumerate(frames):
-            frame_path = os.path.join(frame_dir, f"frame_{i:06d}.png")
-            Image.fromarray(frame).save(frame_path)
-            frame_files.append(frame_path)
+        try:
+            for i, frame in enumerate(frames):
+                frame_path = os.path.join(frame_dir, f"frame_{i:06d}.png")
+                Image.fromarray(frame).save(frame_path)
+            
+            self._encode_frame_dir_to_video(
+                frame_dir=frame_dir,
+                total_frames=len(frames),
+                output_path=output_path,
+                duration=duration,
+                audio_path=audio_path
+            )
+        finally:
+            shutil.rmtree(frame_dir, ignore_errors=True)
+
+    def _encode_frame_dir_to_video(self, frame_dir: str, total_frames: int,
+                                   output_path: str, duration: float,
+                                   audio_path: Optional[str] = None):
+        """将指定目录中的帧序列编码为视频"""
+        if total_frames <= 0:
+            raise RuntimeError("No frames to encode")
         
         # 计算帧率
-        total_frames = len(frames)
         fps = total_frames / duration if duration > 0 else self.fps
         
         # 构建ffmpeg命令
@@ -634,12 +649,7 @@ class VideoGenerator:
         
         # 执行ffmpeg
         result = subprocess.run(cmd, capture_output=True, text=True)
-        
-        # 清理临时文件
-        for f in frame_files:
-            os.remove(f)
-        os.rmdir(frame_dir)
-        
+
         if result.returncode != 0:
             logger.error(f"FFmpeg error: {result.stderr}")
             raise RuntimeError(f"FFmpeg failed: {result.stderr}")
@@ -668,11 +678,11 @@ class VideoGenerator:
             logger.warning("No news items provided, generating intro/outro only video")
 
         for idx, news in enumerate(normalized_news, 1):
-            title = news['title'] or '今日要闻'
-            summary = (news['summary'] or '')[:90]
-            source_text = news['source'] if news['source'] else '综合来源'
+            title = (news['title'] or '今日要闻').strip()[:28]
+            summary = (news['summary'] or '').strip()[:36]
+            source_text = (news['source'] or '综合来源').strip()[:10]
 
-            tts_text = f"第{idx}条新闻。{title}。{summary}。来源：{source_text}。"
+            tts_text = f"第{idx}条。{title}。{summary}。{source_text}。"
             subtitle_text = f"{title}。{summary}。"
             subtitles = self._split_short_subtitles(subtitle_text, max_chars=14)
 
@@ -710,64 +720,80 @@ class VideoGenerator:
         audio_duration = self._get_audio_duration(audio_path)
         logger.info(f"Total audio duration: {audio_duration:.2f}s")
 
-        # 根据每段音频时长和字幕切片渲染画面
-        all_frames = []
-        for block in blocks:
-            subtitles = block['subtitles'] or ['']
-            total_block_frames = max(1, int(block['duration'] * self.fps))
-            weights = [max(len(s), 1) for s in subtitles]
-            total_weight = sum(weights)
+        # 根据每段音频时长和字幕切片渲染画面（逐帧落盘，避免内存暴涨）
+        import tempfile
+        import shutil
 
-            subtitle_frame_counts = [
-                max(1, int(total_block_frames * (weight / total_weight)))
-                for weight in weights
-            ]
-            diff = total_block_frames - sum(subtitle_frame_counts)
-            if diff > 0:
-                subtitle_frame_counts[-1] += diff
-            elif diff < 0:
-                for idx in sorted(
-                    range(len(subtitle_frame_counts)),
-                    key=lambda i: subtitle_frame_counts[i],
-                    reverse=True
-                ):
-                    if diff == 0:
-                        break
-                    reducible = subtitle_frame_counts[idx] - 1
-                    if reducible <= 0:
-                        continue
-                    step = min(reducible, -diff)
-                    subtitle_frame_counts[idx] -= step
-                    diff += step
+        frame_dir = tempfile.mkdtemp()
+        total_frames = 0
+        try:
+            for block in blocks:
+                subtitles = block['subtitles'] or ['']
+                total_block_frames = max(1, int(block['duration'] * self.fps))
+                weights = [max(len(s), 1) for s in subtitles]
+                total_weight = sum(weights)
 
-            for subtitle, subtitle_frames in zip(subtitles, subtitle_frame_counts):
-                for i in range(subtitle_frames):
-                    progress = i / subtitle_frames
-                    if block['scene'] == 'intro':
-                        frame = self.create_background_frame(
-                            date_str,
-                            weekday_str,
-                            progress,
-                            True,
-                            subtitle=subtitle
-                        )
-                    elif block['scene'] == 'news':
-                        frame = self.create_news_frame(
-                            block['news'],
-                            block['index'],
-                            block['total'],
-                            progress,
-                            subtitle=subtitle,
-                            display_date=date_str
-                        )
-                    else:
-                        frame = self.create_ending_frame(progress, subtitle=subtitle)
-                    all_frames.append(frame)
+                subtitle_frame_counts = [
+                    max(1, int(total_block_frames * (weight / total_weight)))
+                    for weight in weights
+                ]
+                diff = total_block_frames - sum(subtitle_frame_counts)
+                if diff > 0:
+                    subtitle_frame_counts[-1] += diff
+                elif diff < 0:
+                    for idx in sorted(
+                        range(len(subtitle_frame_counts)),
+                        key=lambda i: subtitle_frame_counts[i],
+                        reverse=True
+                    ):
+                        if diff == 0:
+                            break
+                        reducible = subtitle_frame_counts[idx] - 1
+                        if reducible <= 0:
+                            continue
+                        step = min(reducible, -diff)
+                        subtitle_frame_counts[idx] -= step
+                        diff += step
 
-        # 生成视频
-        timestamp = self._beijing_now().strftime("%Y%m%d_%H%M%S")
-        output_path = os.path.join(self.output_dir, f'daily_news_{timestamp}.mp4')
-        self.frames_to_video(all_frames, output_path, audio_duration, audio_path)
+                for subtitle, subtitle_frames in zip(subtitles, subtitle_frame_counts):
+                    for i in range(subtitle_frames):
+                        progress = i / subtitle_frames
+                        if block['scene'] == 'intro':
+                            frame = self.create_background_frame(
+                                date_str,
+                                weekday_str,
+                                progress,
+                                True,
+                                subtitle=subtitle
+                            )
+                        elif block['scene'] == 'news':
+                            frame = self.create_news_frame(
+                                block['news'],
+                                block['index'],
+                                block['total'],
+                                progress,
+                                subtitle=subtitle,
+                                display_date=date_str
+                            )
+                        else:
+                            frame = self.create_ending_frame(progress, subtitle=subtitle)
+
+                        frame_path = os.path.join(frame_dir, f"frame_{total_frames:06d}.png")
+                        Image.fromarray(frame).save(frame_path)
+                        total_frames += 1
+
+            # 生成视频
+            timestamp = self._beijing_now().strftime("%Y%m%d_%H%M%S")
+            output_path = os.path.join(self.output_dir, f'daily_news_{timestamp}.mp4')
+            self._encode_frame_dir_to_video(
+                frame_dir=frame_dir,
+                total_frames=total_frames,
+                output_path=output_path,
+                duration=audio_duration,
+                audio_path=audio_path
+            )
+        finally:
+            shutil.rmtree(frame_dir, ignore_errors=True)
 
         # 清理临时文件
         for block_audio_path in block_audio_paths:
