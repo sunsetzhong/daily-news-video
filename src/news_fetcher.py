@@ -44,6 +44,25 @@ class NewsFetcher:
         self.x666_base_url = os.getenv('X666_BASE_URL', 'https://x666.me/v1').rstrip('/')
         self.x666_api_key = os.getenv('X666_API_KEY') or os.getenv('OPENAI_API_KEY', '')
         self.x666_model = os.getenv('X666_MODEL', 'gemini-2.5-flash')
+        self.max_news_items = self._read_int_env('NEWS_MAX_ITEMS', default=12, minimum=4, maximum=30)
+
+    def _read_int_env(self, key: str, default: int, minimum: int, maximum: int) -> int:
+        """读取整数环境变量并做边界保护"""
+        raw = os.getenv(key, '').strip()
+        if not raw:
+            return default
+        try:
+            value = int(raw)
+        except ValueError:
+            logger.warning(f"Invalid {key}={raw!r}, fallback to default={default}")
+            return default
+
+        bounded = max(minimum, min(maximum, value))
+        if bounded != value:
+            logger.warning(
+                f"{key}={value} is out of range [{minimum}, {maximum}], adjusted to {bounded}"
+            )
+        return bounded
 
     def _strip_html(self, text: str) -> str:
         """移除HTML标签"""
@@ -185,6 +204,7 @@ class NewsFetcher:
         if not self.x666_api_key:
             return None
 
+        target_count = max(1, min(len(news_items), self.max_news_items))
         items_payload = []
         for news in news_items:
             items_payload.append({
@@ -201,7 +221,8 @@ class NewsFetcher:
             "2) 去除重复信息；"
             "3) 分成“国内新闻”和“国际新闻”；"
             "4) 每条content精炼、自然口播，避免模板腔；"
-            "5) 仅返回JSON，不要Markdown。"
+            "5) 在去重前提下，尽量保留信息量，新闻总条数目标不少于输入条数的80%；"
+            "6) 仅返回JSON，不要Markdown。"
             "JSON格式："
             "{"
             "\"opening\":\"...\","
@@ -278,6 +299,47 @@ class NewsFetcher:
 
             domestic_news = normalize_items(domestic_raw, 'domestic')
             international_news = normalize_items(international_raw, 'international')
+
+            # AI去重后数量不足时，使用原始抓取结果补齐，避免新闻条数过少
+            def item_key_from_text(text: str) -> str:
+                return re.sub(r'[^\w\u4e00-\u9fff]', '', text.lower())
+
+            def to_script_item(news: NewsItem, section: str) -> Dict:
+                title = (news.title or '').strip()
+                summary = (news.summary or '').strip()
+                content_text = f"{title}。{summary}".strip('。')
+                if not content_text:
+                    content_text = title or summary
+                if not content_text.endswith('。'):
+                    content_text += '。'
+                return {
+                    'section': section,
+                    'title': title or content_text[:24],
+                    'content': content_text,
+                    'subtitle': content_text,
+                    'source': news.source
+                }
+
+            existing_keys = set()
+            for item in domestic_news + international_news:
+                key = item_key_from_text(item.get('title') or item.get('content', ''))
+                if key:
+                    existing_keys.add(key)
+
+            for news in news_items:
+                if len(domestic_news) + len(international_news) >= target_count:
+                    break
+                candidate_key = item_key_from_text(news.title or news.summary)
+                if not candidate_key or candidate_key in existing_keys:
+                    continue
+                section = 'international' if self._is_international_news(news) else 'domestic'
+                append_item = to_script_item(news, section)
+                if section == 'international':
+                    international_news.append(append_item)
+                else:
+                    domestic_news.append(append_item)
+                existing_keys.add(candidate_key)
+
             if not domestic_news and not international_news:
                 return None
 
@@ -611,8 +673,10 @@ class NewsFetcher:
         logger.info(f"Using {len(mock_news)} mock news items")
         return mock_news
     
-    def filter_and_rank_news(self, news_items: List[NewsItem], max_items: int = 8) -> List[NewsItem]:
+    def filter_and_rank_news(self, news_items: List[NewsItem], max_items: Optional[int] = None) -> List[NewsItem]:
         """过滤和排序新闻，选择最重要的内容"""
+        limit = max_items if isinstance(max_items, int) and max_items > 0 else self.max_news_items
+
         # 去重：基于标题相似度
         unique_news = []
         seen_titles = set()
@@ -646,7 +710,7 @@ class NewsFetcher:
 
         unique_news.sort(key=sort_key)
         
-        return unique_news[:max_items]
+        return unique_news[:limit]
     
     def generate_news_script(self, news_items: List[NewsItem]) -> Dict:
         """生成新闻播报脚本"""

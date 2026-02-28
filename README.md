@@ -124,6 +124,7 @@ daily-news-video/
 | `X666_BASE_URL` | `https://x666.me/v1` | x666 OpenAI兼容接口地址 |
 | `X666_MODEL` | `gemini-2.5-flash` | 文案优化模型 |
 | `NEWS_API_KEY` | - | NewsAPI 密钥 |
+| `NEWS_MAX_ITEMS` | `12` | 每次视频最多精选新闻条数（4-30） |
 | `TTS_VOICE` | `zh-CN-XiaoxiaoNeural` | TTS 语音 |
 | `USE_MOCK_NEWS` | `false` | 使用模拟数据 |
 
@@ -139,11 +140,10 @@ daily-news-video/
 
 ### 修改新闻数量
 
-编辑 `src/news_fetcher.py` 中的 `filter_and_rank_news` 方法：
+推荐直接使用环境变量：
 
-```python
-def filter_and_rank_news(self, news_items: List[NewsItem], max_items: int = 8) -> List[NewsItem]:
-    # 修改 max_items 参数
+```bash
+export NEWS_MAX_ITEMS=12
 ```
 
 ### 修改视频样式

@@ -835,7 +835,7 @@ class VideoGenerator:
         blocks.append({
             'scene': 'intro',
             'tts_text': opening_text,
-            'subtitles': opening_subtitles or ['欢迎收听听闻天下。']
+            'subtitles': opening_subtitles or [opening_text]
         })
 
         domestic_script = script.get('domestic_news', [])
@@ -874,7 +874,7 @@ class VideoGenerator:
                 blocks.append({
                     'scene': 'news',
                     'tts_text': section_text,
-                    'subtitles': self._split_short_subtitles("国内新闻", max_chars=14),
+                    'subtitles': self._split_short_subtitles(section_text, max_chars=14) or [section_text],
                     'news': {},
                     'index': 1,
                     'total': max(total_script_news, 1)
@@ -882,13 +882,13 @@ class VideoGenerator:
 
                 for idx, item in enumerate(domestic_script, 1):
                     content = str(item.get('content', '')).strip()
-                    subtitle_text = str(item.get('subtitle', '')).strip() or content
+                    subtitle_text = content
                     if not content:
                         continue
                     blocks.append({
                         'scene': 'news',
                         'tts_text': content,
-                        'subtitles': self._split_short_subtitles(subtitle_text, max_chars=14) or [subtitle_text[:14]],
+                        'subtitles': self._split_short_subtitles(subtitle_text, max_chars=14) or [subtitle_text],
                         'news': {},
                         'index': idx,
                         'total': max(total_script_news, 1)
@@ -899,7 +899,7 @@ class VideoGenerator:
                 blocks.append({
                     'scene': 'news',
                     'tts_text': section_text,
-                    'subtitles': self._split_short_subtitles("国际新闻", max_chars=14),
+                    'subtitles': self._split_short_subtitles(section_text, max_chars=14) or [section_text],
                     'news': {},
                     'index': max(len(domestic_script), 1),
                     'total': max(total_script_news, 1)
@@ -907,13 +907,13 @@ class VideoGenerator:
 
                 for idx, item in enumerate(international_script, len(domestic_script) + 1):
                     content = str(item.get('content', '')).strip()
-                    subtitle_text = str(item.get('subtitle', '')).strip() or content
+                    subtitle_text = content
                     if not content:
                         continue
                     blocks.append({
                         'scene': 'news',
                         'tts_text': content,
-                        'subtitles': self._split_short_subtitles(subtitle_text, max_chars=14) or [subtitle_text[:14]],
+                        'subtitles': self._split_short_subtitles(subtitle_text, max_chars=14) or [subtitle_text],
                         'news': {},
                         'index': idx,
                         'total': max(total_script_news, 1)
@@ -924,7 +924,7 @@ class VideoGenerator:
         blocks.append({
             'scene': 'outro',
             'tts_text': closing_text,
-            'subtitles': closing_subtitles or ['感谢收听，我们明天再见。']
+            'subtitles': closing_subtitles or [closing_text]
         })
 
         if not blocks:
