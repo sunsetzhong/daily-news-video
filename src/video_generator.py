@@ -53,8 +53,8 @@ class VideoGenerator:
         # 断句模型配置（OpenAI兼容接口）
         self.x666_base_url = os.getenv('X666_BASE_URL', 'https://x666.me/v1').rstrip('/')
         self.x666_api_key = os.getenv('X666_API_KEY') or os.getenv('OPENAI_API_KEY', '')
-        self.x666_model = os.getenv('X666_MODEL', 'gemini-2.5-flash')
-        self.enable_ai_subtitle_split = os.getenv('ENABLE_AI_SUBTITLE_SPLIT', 'false').lower() == 'true'
+        self.x666_model = os.getenv('X666_MODEL', 'gemini-3-flash-preview')
+        self.enable_ai_subtitle_split = os.getenv('ENABLE_AI_SUBTITLE_SPLIT', 'true').lower() == 'true'
         self.subtitle_split_cache: Dict[str, List[str]] = {}
 
         # 预渲染科技背景模板，减少每帧绘制开销
@@ -190,17 +190,20 @@ class VideoGenerator:
                     {
                         "role": "system",
                         "content": (
-                            "你是中文新闻字幕断句助手。"
-                            "请严格保留原文信息，不改写、不扩写、不删除。"
-                            "把文本拆成适合字幕的短句。"
-                            "只输出JSON数组，例如：[\"句子1\",\"句子2\"]。"
+                            "你是中文新闻视频字幕断句助手。"
+                            "任务是把文本切成短字幕。"
+                            "每行最多12个汉字，尽量更短。"
+                            "保持语义连贯和逻辑完整，不改写、不扩写、不删除事实。"
+                            "优先在自然停顿处断句。"
+                            "仅输出JSON数组，例如：[\"句子1\",\"句子2\"]。"
                         )
                     },
                     {
                         "role": "user",
                         "content": (
-                            f"请对这段文本断句，每句不超过{max_chars}个汉字，"
-                            f"尽量在自然停顿处分句，保留必要标点：\n{text}"
+                            f"请按“视频字幕”标准断句。"
+                            f"要求：每行最多{max_chars}个汉字，能短则短，但语义要通顺连贯。"
+                            f"只返回JSON数组，不要额外说明。文本如下：\n{text}"
                         )
                     }
                 ]
@@ -244,7 +247,7 @@ class VideoGenerator:
             logger.warning(f"Subtitle split via x666 failed, fallback to local: {e}")
             return []
 
-    def _split_short_subtitles(self, text: str, max_chars: int = 14) -> List[str]:
+    def _split_short_subtitles(self, text: str, max_chars: int = 12) -> List[str]:
         """将文案拆分为短字幕片段，优先使用模型断句"""
         if not text:
             return []
@@ -375,9 +378,7 @@ class VideoGenerator:
         draw.rounded_rectangle(
             [left, top, right, bottom],
             radius=18,
-            fill=(8, 30, 105),
-            outline=(180, 220, 255),
-            width=2
+            fill=(8, 30, 105)
         )
         if self.logo_image is not None:
             # `paste` with alpha mask works for both RGB and RGBA base images.
@@ -844,7 +845,7 @@ class VideoGenerator:
         blocks = []
 
         opening_text = script.get('opening', '欢迎收听听闻天下。')
-        opening_subtitles = self._split_short_subtitles(opening_text, max_chars=14)
+        opening_subtitles = self._split_short_subtitles(opening_text, max_chars=12)
         blocks.append({
             'scene': 'intro',
             'tts_text': opening_text,
@@ -887,7 +888,7 @@ class VideoGenerator:
                 blocks.append({
                     'scene': 'news',
                     'tts_text': section_text,
-                    'subtitles': self._split_short_subtitles(section_text, max_chars=14) or [section_text],
+                    'subtitles': self._split_short_subtitles(section_text, max_chars=12) or [section_text],
                     'news': {},
                     'index': 1,
                     'total': max(total_script_news, 1)
@@ -898,10 +899,11 @@ class VideoGenerator:
                     subtitle_text = content
                     if not content:
                         continue
+                    numbered_tts_text = f"第{idx}条，{content}"
                     blocks.append({
                         'scene': 'news',
-                        'tts_text': content,
-                        'subtitles': self._split_short_subtitles(subtitle_text, max_chars=14) or [subtitle_text],
+                        'tts_text': numbered_tts_text,
+                        'subtitles': self._split_short_subtitles(subtitle_text, max_chars=12) or [subtitle_text],
                         'news': {},
                         'index': idx,
                         'total': max(total_script_news, 1)
@@ -912,7 +914,7 @@ class VideoGenerator:
                 blocks.append({
                     'scene': 'news',
                     'tts_text': section_text,
-                    'subtitles': self._split_short_subtitles(section_text, max_chars=14) or [section_text],
+                    'subtitles': self._split_short_subtitles(section_text, max_chars=12) or [section_text],
                     'news': {},
                     'index': max(len(domestic_script), 1),
                     'total': max(total_script_news, 1)
@@ -923,17 +925,18 @@ class VideoGenerator:
                     subtitle_text = content
                     if not content:
                         continue
+                    numbered_tts_text = f"第{idx}条，{content}"
                     blocks.append({
                         'scene': 'news',
-                        'tts_text': content,
-                        'subtitles': self._split_short_subtitles(subtitle_text, max_chars=14) or [subtitle_text],
+                        'tts_text': numbered_tts_text,
+                        'subtitles': self._split_short_subtitles(subtitle_text, max_chars=12) or [subtitle_text],
                         'news': {},
                         'index': idx,
                         'total': max(total_script_news, 1)
                     })
 
         closing_text = script.get('closing', '以上就是今天的新闻播报，感谢收听，我们明天再见。')
-        closing_subtitles = self._split_short_subtitles(closing_text, max_chars=14)
+        closing_subtitles = self._split_short_subtitles(closing_text, max_chars=12)
         blocks.append({
             'scene': 'outro',
             'tts_text': closing_text,

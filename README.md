@@ -122,13 +122,15 @@ daily-news-video/
 |------|--------|------|
 | `X666_API_KEY` | - | x666 API 密钥（文案优化：去重/分组/润色） |
 | `X666_BASE_URL` | `https://x666.me/v1` | x666 OpenAI兼容接口地址 |
-| `X666_MODEL` | `gemini-2.5-flash` | 文案优化模型 |
+| `X666_MODEL` | `gemini-3-flash-preview` | 文案优化模型 |
 | `NEWS_API_KEY` | - | NewsAPI 密钥 |
 | `NEWS_MAX_ITEMS` | `12` | 每次视频最多精选新闻条数（4-30） |
 | `TTS_ENGINE` | `edge` | TTS 引擎，可选 `edge` / `gtts` |
 | `TTS_VOICE` | `zh-CN-XiaoxiaoNeural` | TTS 语音 |
 | `OUTPUT_DIR` | `output` | 输出目录（用于多 voice 并行产物隔离） |
 | `USE_MOCK_NEWS` | `false` | 使用模拟数据 |
+
+> 字幕断句默认启用 AI 断句，并按“单行最多 12 字”进行切分。
 
 ### 支持的 TTS 语音
 
