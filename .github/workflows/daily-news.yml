@@ -24,6 +24,24 @@ jobs:
     permissions:
       contents: read
       actions: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - tts_engine: edge
+            tts_voice: zh-CN-XiaoxiaoNeural
+          - tts_engine: edge
+            tts_voice: zh-CN-XiaoyiNeural
+          - tts_engine: edge
+            tts_voice: zh-CN-YunxiNeural
+          - tts_engine: edge
+            tts_voice: zh-CN-YunjianNeural
+          - tts_engine: edge
+            tts_voice: zh-CN-YunxiaNeural
+          - tts_engine: edge
+            tts_voice: zh-CN-XiaoxuanNeural
+          - tts_engine: gtts
+            tts_voice: gtts-zh-CN
     
     steps:
     - name: Checkout repository
@@ -60,15 +78,19 @@ jobs:
         X666_BASE_URL: https://x666.me/v1
         X666_MODEL: gemini-2.5-flash
         NEWS_API_KEY: ${{ secrets.NEWS_API_KEY }}
-        TTS_VOICE: ${{ secrets.TTS_VOICE || 'zh-CN-XiaoxiaoNeural' }}
+        TTS_ENGINE: ${{ matrix.tts_engine }}
+        TTS_VOICE: ${{ matrix.tts_voice }}
       run: |
+        SAFE_ENGINE="$(echo "${TTS_ENGINE}" | sed 's/[^a-zA-Z0-9._-]/_/g')"
+        SAFE_VOICE="$(echo "${TTS_VOICE}" | sed 's/[^a-zA-Z0-9._-]/_/g')"
+        export OUTPUT_DIR="output/${SAFE_ENGINE}_${SAFE_VOICE}"
         python src/main.py
 
     - name: Upload video artifact
       uses: actions/upload-artifact@v4
       with:
-        name: daily-news-video-${{ github.run_id }}
-        path: output/
+        name: daily-news-video-${{ github.run_id }}-${{ matrix.tts_engine }}-${{ matrix.tts_voice }}
+        path: output/${{ matrix.tts_engine }}_${{ matrix.tts_voice }}/
         retention-days: 30
         if-no-files-found: error
 
@@ -76,7 +98,7 @@ jobs:
       if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: logs-${{ github.run_id }}
+        name: logs-${{ github.run_id }}-${{ matrix.tts_engine }}-${{ matrix.tts_voice }}
         path: logs/
         retention-days: 7
         if-no-files-found: ignore

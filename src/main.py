@@ -40,9 +40,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
-def setup_directories():
+def setup_directories(output_dir: str):
     """创建必要的目录"""
-    dirs = ['output', 'logs', 'assets', 'output/temp']
+    dirs = [output_dir, 'logs', 'assets', os.path.join(output_dir, 'temp')]
     for d in dirs:
         Path(d).mkdir(parents=True, exist_ok=True)
         logger.info(f"Directory ensured: {d}")
@@ -80,8 +80,10 @@ async def main():
     logger.info("听闻天下 - 每日新闻视频生成器启动")
     logger.info("=" * 60)
     
+    output_dir = os.getenv('OUTPUT_DIR', 'output')
+
     # 设置目录
-    setup_directories()
+    setup_directories(output_dir=output_dir)
     
     # 检查环境
     logger.info(f"Python version: {sys.version}")
@@ -89,7 +91,7 @@ async def main():
     
     # 初始化组件
     news_fetcher = NewsFetcher()
-    video_generator = VideoGenerator()
+    video_generator = VideoGenerator(output_dir=output_dir)
     
     try:
         # 1. 获取新闻
@@ -104,7 +106,7 @@ async def main():
         news_items = news_result['news_items']
         
         # 保存脚本
-        save_script(script)
+        save_script(script, output_dir=output_dir)
         
         # 2. 生成视频
         logger.info("开始生成视频...")
@@ -112,7 +114,7 @@ async def main():
         
         # 3. 生成元数据
         metadata = generate_metadata(video_path, script, len(news_items))
-        metadata_path = os.path.join('output', 
+        metadata_path = os.path.join(output_dir,
             f'metadata_{bj_now().strftime("%Y%m%d")}.json')
         with open(metadata_path, 'w', encoding='utf-8') as f:
             json.dump(metadata, f, ensure_ascii=False, indent=2)

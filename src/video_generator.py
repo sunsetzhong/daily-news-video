@@ -11,6 +11,7 @@ import re
 from pathlib import Path
 import requests
 import edge_tts
+from gtts import gTTS
 from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
 import numpy as np
 from datetime import datetime, timedelta, timezone
@@ -44,6 +45,7 @@ class VideoGenerator:
         self.font_paths = self._find_fonts()
         
         # TTS配置
+        self.tts_engine = os.getenv('TTS_ENGINE', 'edge').strip().lower()
         self.tts_voice = os.getenv('TTS_VOICE', 'zh-CN-XiaoxiaoNeural')
         self.tts_rate = "+0%"
         self.tts_volume = "+0%"
@@ -686,10 +688,21 @@ class VideoGenerator:
         return self._get_audio_duration(output_path)
 
     async def generate_audio(self, text: str, output_path: str) -> float:
-        """使用edge-tts生成音频"""
+        """生成音频（支持 edge-tts / gtts）"""
         cleaned_text = re.sub(r'\s+', ' ', text or '').strip()
         if not cleaned_text:
             return self._generate_silent_audio(output_path, 0.8)
+
+        if self.tts_engine == 'gtts':
+            try:
+                gTTS(text=cleaned_text, lang='zh-CN').save(output_path)
+                duration = self._get_audio_duration(output_path)
+                logger.info(
+                    f"Generated audio: {output_path}, duration: {duration:.2f}s, engine: gtts"
+                )
+                return duration
+            except Exception as e:
+                logger.warning(f"gTTS failed, fallback to edge-tts: {e}")
 
         voices = []
         for voice in [self.tts_voice, 'zh-CN-XiaoxiaoNeural', 'zh-CN-YunxiNeural']:

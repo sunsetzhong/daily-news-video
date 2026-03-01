@@ -28,7 +28,7 @@
 - 每日自动运行（北京时间 00:00）
 - 支持手动触发工作流
 - 多源新闻获取（知乎热榜、微博热搜、百度热搜、NewsAPI）
-- AI 语音合成（Edge TTS）
+- AI 语音合成（支持 Edge TTS / gTTS）
 - 专业视觉效果（渐变背景、光线特效、网点纹理）
 - 自动打包为视频文件
 - 视频产物自动上传到 GitHub Artifacts
@@ -125,7 +125,9 @@ daily-news-video/
 | `X666_MODEL` | `gemini-2.5-flash` | 文案优化模型 |
 | `NEWS_API_KEY` | - | NewsAPI 密钥 |
 | `NEWS_MAX_ITEMS` | `12` | 每次视频最多精选新闻条数（4-30） |
+| `TTS_ENGINE` | `edge` | TTS 引擎，可选 `edge` / `gtts` |
 | `TTS_VOICE` | `zh-CN-XiaoxiaoNeural` | TTS 语音 |
+| `OUTPUT_DIR` | `output` | 输出目录（用于多 voice 并行产物隔离） |
 | `USE_MOCK_NEWS` | `false` | 使用模拟数据 |
 
 ### 支持的 TTS 语音
@@ -169,6 +171,7 @@ export NEWS_MAX_ITEMS=12
 工作流运行完成后，可以在 Actions 页面的产物区域下载：
 
 - `daily-news-video-{run_id}` - 包含生成的视频文件
+- `daily-news-video-{run_id}-{engine}-{voice}` - 每种 voice 的独立打包产物
 - `logs-{run_id}` - 包含运行日志
 
 ## 技术栈
