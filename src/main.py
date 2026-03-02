@@ -137,10 +137,13 @@ async def main():
         logger.info(f"元数据文件: {metadata_path}")
         logger.info("=" * 60)
         
-        # 输出GitHub Actions需要的格式
+        # 输出GitHub Actions需要的格式（新写法）
         if os.getenv('GITHUB_ACTIONS') == 'true':
-            print(f"::set-output name=video_path::{video_path}")
-            print(f"::set-output name=metadata_path::{metadata_path}")
+            github_output = os.getenv('GITHUB_OUTPUT', '').strip()
+            if github_output:
+                with open(github_output, 'a', encoding='utf-8') as f:
+                    f.write(f"video_path={video_path}\n")
+                    f.write(f"metadata_path={metadata_path}\n")
         
         return 0
         
