@@ -138,6 +138,28 @@ class VideoGenerator:
             'source': source.strip() if source else ''
         }
 
+    def _compose_news_tts_text(self, index: int, item: Dict[str, Any]) -> str:
+        """生成每条新闻的口播文本，避免标题和内容重复朗读。"""
+        title = str(item.get('title', '')).strip()
+        content = str(item.get('content', '')).strip()
+
+        if not content and title:
+            body = title
+        elif title and content:
+            normalized_title = re.sub(r'\s+', '', title).strip('。！？，,;；:：')
+            normalized_content = re.sub(r'\s+', '', content)
+            if normalized_title and normalized_title in normalized_content:
+                body = content
+            else:
+                body = f"{title}。{content}"
+        else:
+            body = content
+
+        body = body.strip()
+        if not body:
+            body = "暂无新闻内容。"
+        return f"第{index}条，{body}"
+
     def _load_logo_image(self) -> Optional[Image.Image]:
         """加载左上角logo"""
         logo_candidates = [
@@ -929,7 +951,7 @@ class VideoGenerator:
                     subtitle_text = content
                     if not content:
                         continue
-                    numbered_tts_text = f"第{idx}条，{content}"
+                    numbered_tts_text = self._compose_news_tts_text(idx, item)
                     blocks.append({
                         'scene': 'news',
                         'tts_text': numbered_tts_text,
@@ -955,7 +977,7 @@ class VideoGenerator:
                     subtitle_text = content
                     if not content:
                         continue
-                    numbered_tts_text = f"第{idx}条，{content}"
+                    numbered_tts_text = self._compose_news_tts_text(idx, item)
                     blocks.append({
                         'scene': 'news',
                         'tts_text': numbered_tts_text,
