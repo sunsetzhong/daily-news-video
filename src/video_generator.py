@@ -139,23 +139,9 @@ class VideoGenerator:
         }
 
     def _compose_news_tts_text(self, index: int, item: Dict[str, Any]) -> str:
-        """生成每条新闻的口播文本，避免标题和内容重复朗读。"""
-        title = str(item.get('title', '')).strip()
+        """生成每条新闻的口播文本，仅朗读正文内容（不朗读标题）。"""
         content = str(item.get('content', '')).strip()
-
-        if not content and title:
-            body = title
-        elif title and content:
-            normalized_title = re.sub(r'\s+', '', title).strip('。！？，,;；:：')
-            normalized_content = re.sub(r'\s+', '', content)
-            if normalized_title and normalized_title in normalized_content:
-                body = content
-            else:
-                body = f"{title}。{content}"
-        else:
-            body = content
-
-        body = body.strip()
+        body = content.strip()
         if not body:
             body = "暂无新闻内容。"
         return f"第{index}条，{body}"
