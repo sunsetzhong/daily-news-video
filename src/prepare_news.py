@@ -5,8 +5,20 @@
 import json
 import os
 from pathlib import Path
+from dataclasses import asdict, is_dataclass
 
 from news_fetcher import NewsFetcher
+
+def to_jsonable_items(items):
+    normalized = []
+    for item in items:
+        if is_dataclass(item):
+            normalized.append(asdict(item))
+        elif isinstance(item, dict):
+            normalized.append(item)
+        else:
+            normalized.append(getattr(item, "__dict__", {}))
+    return normalized
 
 
 def main():
@@ -18,7 +30,7 @@ def main():
     result = fetcher.fetch_all_news(use_mock=use_mock)
 
     script = result["script"]
-    news_items = result["news_items"]
+    news_items = to_jsonable_items(result["news_items"])
 
     script_path = out_dir / "script.json"
     news_items_path = out_dir / "news_items.json"
