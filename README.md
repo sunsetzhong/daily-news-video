@@ -48,7 +48,7 @@ cd daily-news-video
 
 | Secret | 说明 | 必需 |
 |--------|------|------|
-| `X666_API_KEY` | x666 OpenAI兼容接口密钥（用于 Gemini 文案优化） | 推荐 |
+| `X666_API_KEY` | Grok OpenAI兼容接口密钥（用于文案优化） | 推荐 |
 | `NEWS_API_KEY` | NewsAPI 的 API Key | 可选 |
 | `TTS_VOICE` | Edge TTS 语音选择，默认 `zh-CN-XiaoxiaoNeural` | 可选 |
 
@@ -121,8 +121,8 @@ daily-news-video/
 | 变量 | 默认值 | 说明 |
 |------|--------|------|
 | `X666_API_KEY` | - | x666 API 密钥（文案优化：去重/分组/润色） |
-| `X666_BASE_URL` | `https://x666.me/v1` | x666 OpenAI兼容接口地址 |
-| `X666_MODEL` | `gemini-3-flash-preview` | 文案优化模型 |
+| `X666_BASE_URL` | `https://grok.oo9.dpdns.org/v1` | Grok OpenAI兼容接口地址 |
+| `X666_MODEL` | `grok-4-fast-expert` | 文案优化模型 |
 | `NEWS_API_KEY` | - | NewsAPI 密钥 |
 | `NEWS_MAX_ITEMS` | `12` | 每次视频最多精选新闻条数（4-30） |
 | `TTS_ENGINE` | `edge` | TTS 引擎，可选 `edge` / `gtts` |

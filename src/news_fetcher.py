@@ -7,12 +7,14 @@ import requests
 import json
 import os
 import re
+import time
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from html import unescape
 from typing import Any, List, Dict, Optional
 from dataclasses import dataclass
+from collections import deque
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -41,10 +43,37 @@ class NewsFetcher:
         })
         self.news_api_key = os.getenv('NEWS_API_KEY', '')
         self.allow_mock_fallback = os.getenv('ALLOW_MOCK_NEWS_FALLBACK', 'false').lower() == 'true'
-        self.x666_base_url = os.getenv('X666_BASE_URL', 'https://x666.me/v1').rstrip('/')
+        self.x666_base_url = os.getenv('X666_BASE_URL', 'https://grok.oo9.dpdns.org/v1').rstrip('/')
         self.x666_api_key = os.getenv('X666_API_KEY') or os.getenv('OPENAI_API_KEY', '')
-        self.x666_model = os.getenv('X666_MODEL', 'gemini-2.5-flash')
+        self.x666_model = os.getenv('X666_MODEL', 'grok-4-fast-expert')
         self.max_news_items = self._read_int_env('NEWS_MAX_ITEMS', default=12, minimum=4, maximum=30)
+        self._llm_request_timestamps = deque()
+        self._llm_rate_limit_window_seconds = 10.0
+        self._llm_rate_limit_max_requests = 10
+
+    def _throttle_llm_request(self):
+        """限制 LLM 请求速率，避免超过 10 req / 10s"""
+        now = time.monotonic()
+        while self._llm_request_timestamps and (
+            now - self._llm_request_timestamps[0] >= self._llm_rate_limit_window_seconds
+        ):
+            self._llm_request_timestamps.popleft()
+
+        if len(self._llm_request_timestamps) >= self._llm_rate_limit_max_requests:
+            sleep_seconds = self._llm_rate_limit_window_seconds - (
+                now - self._llm_request_timestamps[0]
+            ) + 0.05
+            if sleep_seconds > 0:
+                logger.info(f"LLM rate limit guard sleep: {sleep_seconds:.2f}s")
+                time.sleep(sleep_seconds)
+
+            now = time.monotonic()
+            while self._llm_request_timestamps and (
+                now - self._llm_request_timestamps[0] >= self._llm_rate_limit_window_seconds
+            ):
+                self._llm_request_timestamps.popleft()
+
+        self._llm_request_timestamps.append(time.monotonic())
 
     def _read_int_env(self, key: str, default: int, minimum: int, maximum: int) -> int:
         """读取整数环境变量并做边界保护"""
@@ -252,6 +281,7 @@ class NewsFetcher:
         }
 
         try:
+            self._throttle_llm_request()
             response = requests.post(
                 f"{self.x666_base_url}/chat/completions",
                 headers=headers,

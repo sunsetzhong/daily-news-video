@@ -8,6 +8,7 @@ import subprocess
 import json
 import asyncio
 import re
+import time
 from pathlib import Path
 import requests
 import edge_tts
@@ -16,6 +17,7 @@ from PIL import Image, ImageDraw, ImageFont, ImageFilter, ImageEnhance
 import numpy as np
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Tuple, Any, Optional
+from collections import deque
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -51,11 +53,14 @@ class VideoGenerator:
         self.tts_volume = "+0%"
 
         # 断句模型配置（OpenAI兼容接口）
-        self.x666_base_url = os.getenv('X666_BASE_URL', 'https://x666.me/v1').rstrip('/')
+        self.x666_base_url = os.getenv('X666_BASE_URL', 'https://grok.oo9.dpdns.org/v1').rstrip('/')
         self.x666_api_key = os.getenv('X666_API_KEY') or os.getenv('OPENAI_API_KEY', '')
-        self.x666_model = os.getenv('X666_MODEL', 'gemini-3-flash-preview')
+        self.x666_model = os.getenv('X666_MODEL', 'grok-4-fast-expert')
         self.enable_ai_subtitle_split = os.getenv('ENABLE_AI_SUBTITLE_SPLIT', 'true').lower() == 'true'
         self.subtitle_split_cache: Dict[str, List[str]] = {}
+        self._llm_request_timestamps = deque()
+        self._llm_rate_limit_window_seconds = 10.0
+        self._llm_rate_limit_max_requests = 10
 
         # 预渲染科技背景模板，减少每帧绘制开销
         self.base_background = self._create_tech_background()
@@ -212,6 +217,7 @@ class VideoGenerator:
                 "Authorization": f"Bearer {self.x666_api_key}",
                 "Content-Type": "application/json",
             }
+            self._throttle_llm_request()
             response = requests.post(url, headers=headers, json=payload, timeout=30)
             response.raise_for_status()
             data = response.json()
@@ -246,6 +252,30 @@ class VideoGenerator:
         except Exception as e:
             logger.warning(f"Subtitle split via x666 failed, fallback to local: {e}")
             return []
+
+    def _throttle_llm_request(self):
+        """限制 LLM 请求速率，避免超过 10 req / 10s"""
+        now = time.monotonic()
+        while self._llm_request_timestamps and (
+            now - self._llm_request_timestamps[0] >= self._llm_rate_limit_window_seconds
+        ):
+            self._llm_request_timestamps.popleft()
+
+        if len(self._llm_request_timestamps) >= self._llm_rate_limit_max_requests:
+            sleep_seconds = self._llm_rate_limit_window_seconds - (
+                now - self._llm_request_timestamps[0]
+            ) + 0.05
+            if sleep_seconds > 0:
+                logger.info(f"LLM rate limit guard sleep: {sleep_seconds:.2f}s")
+                time.sleep(sleep_seconds)
+
+            now = time.monotonic()
+            while self._llm_request_timestamps and (
+                now - self._llm_request_timestamps[0] >= self._llm_rate_limit_window_seconds
+            ):
+                self._llm_request_timestamps.popleft()
+
+        self._llm_request_timestamps.append(time.monotonic())
 
     def _split_short_subtitles(self, text: str, max_chars: int = 12) -> List[str]:
         """将文案拆分为短字幕片段，优先使用模型断句"""
