@@ -56,6 +56,10 @@ def save_script(script: dict, output_dir: str = 'output'):
     logger.info(f"Script saved to: {script_path}")
     return script_path
 
+def load_json(path: str):
+    with open(path, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
 
 def generate_metadata(video_path: str, script: dict, news_count: int) -> dict:
     """生成视频元数据"""
@@ -94,16 +98,24 @@ async def main():
     video_generator = VideoGenerator(output_dir=output_dir)
     
     try:
-        # 1. 获取新闻
-        logger.info("开始获取新闻...")
-        use_mock = os.getenv('USE_MOCK_NEWS', 'false').lower() == 'true'
-        news_result = news_fetcher.fetch_all_news(use_mock=use_mock)
-        
-        logger.info(f"获取到 {news_result['total_fetched']} 条新闻，"
-                   f"精选 {news_result['total_selected']} 条")
-        
-        script = news_result['script']
-        news_items = news_result['news_items']
+        # 1. 获取新闻或读取预生成输入
+        input_script_path = os.getenv('INPUT_SCRIPT_PATH', '').strip()
+        input_news_items_path = os.getenv('INPUT_NEWS_ITEMS_PATH', '').strip()
+        if input_script_path and input_news_items_path:
+            logger.info(f"使用预生成脚本: {input_script_path}")
+            logger.info(f"使用预生成新闻: {input_news_items_path}")
+            script = load_json(input_script_path)
+            news_items = load_json(input_news_items_path)
+        else:
+            logger.info("开始获取新闻...")
+            use_mock = os.getenv('USE_MOCK_NEWS', 'false').lower() == 'true'
+            news_result = news_fetcher.fetch_all_news(use_mock=use_mock)
+            
+            logger.info(f"获取到 {news_result['total_fetched']} 条新闻，"
+                       f"精选 {news_result['total_selected']} 条")
+            
+            script = news_result['script']
+            news_items = news_result['news_items']
         
         # 保存脚本
         save_script(script, output_dir=output_dir)
